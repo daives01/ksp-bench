@@ -1,0 +1,25 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local KSP artifacts and benchmark outputs
+runs/
+logs/
+recordings/
+screenshots/
+*.craft
+*.sfs
+*.loadmeta
+
+# Local config
+.env
+local*.yaml
+local*.json
+
+# Keep committed fixtures explicit; local exports should be renamed before commit.
+*.local.ckan
