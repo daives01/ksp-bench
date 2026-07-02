@@ -1,0 +1,31 @@
+instance_id: kerbin_orbit_80km_fixed_rocket_v0
+benchmark_version: 0.0.1
+body: Kerbin
+launch_site: KSC launchpad
+vessel_name: KSP-bench fixed rocket v0
+timeout_s: 600
+target_orbit:
+  apoapsis_min_m: 75000
+  apoapsis_max_m: 85000
+  periapsis_min_m: 70000
+allowed_controls:
+  - set_throttle
+  - set_attitude
+  - set_sas
+  - set_rcs
+  - stage
+  - wait
+scoring:
+  cleared_tower_m: 100
+  reached_10km_m: 10000
+  reached_space_m: 70000
+  target_orbit_points: 30
+  fuel_bonus_points: 5
+  invalid_action_penalty: 5
+artifacts:
+  telemetry_interval_s: 1
+  root_dir: runs
+krpc:
+  host: 127.0.0.1
+  rpc_port: 50000
+  stream_port: 50001

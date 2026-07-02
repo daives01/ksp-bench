@@ -1,0 +1,13 @@
+{
+  "kind": "metapackage",
+  "abstract": "KSP-bench v0 stock-plus-kRPC mod set placeholder.",
+  "identifier": "KSP-bench-v0",
+  "name": "KSP-bench v0",
+  "license": "MIT",
+  "version": "0.0.1",
+  "depends": [
+    {
+      "name": "kRPC"
+    }
+  ]
+}
