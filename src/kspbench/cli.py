@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from kspbench import __version__
+from kspbench.agent_adapters import ExternalAgentAdapter, ToolBridgeServer
 from kspbench.artifacts import RunArtifacts, default_run_id
 from kspbench.config import Scenario, load_scenario
 from kspbench.krpc_client import KRPCController, check_krpc_package, check_krpc_reachable
@@ -72,7 +73,82 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="seconds between telemetry samples during sleep/wait helpers",
     )
+    live.add_argument(
+        "--warp-threshold",
+        type=float,
+        default=10.0,
+        help="minimum wait seconds before attempting KSP time warp",
+    )
+    live.add_argument(
+        "--no-time-warp",
+        action="store_true",
+        help="disable KSP time warp in wait helpers",
+    )
     live.set_defaults(func=_live)
+
+    external = subparsers.add_parser(
+        "live-external",
+        help="run a live benchmark with an external CLI coding agent",
+    )
+    external.add_argument("scenario")
+    external.add_argument(
+        "--adapter",
+        required=True,
+        choices=["codex", "opencode"],
+        help="external agent adapter to run",
+    )
+    external.add_argument("--model", help="model name passed through to the agent CLI")
+    external.add_argument(
+        "--executable",
+        help="agent executable path; defaults to the adapter name",
+    )
+    external.add_argument(
+        "--agent-arg",
+        action="append",
+        default=[],
+        help="extra argument to pass to the agent CLI; repeat for multiple args",
+    )
+    external.add_argument("--run-id")
+    external.add_argument(
+        "--agent-timeout",
+        type=float,
+        help="max wall-clock seconds for the external agent process",
+    )
+    external.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=30.0,
+        help="default max wall-clock seconds for each executeKRPC call",
+    )
+    external.add_argument(
+        "--max-sleep",
+        type=float,
+        default=240.0,
+        help="max seconds allowed for executeKRPC sleep/wait helpers",
+    )
+    external.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="seconds between telemetry samples during sleep/wait helpers",
+    )
+    external.add_argument(
+        "--warp-threshold",
+        type=float,
+        default=10.0,
+        help="minimum wait seconds before attempting KSP time warp",
+    )
+    external.add_argument(
+        "--no-time-warp",
+        action="store_true",
+        help="disable KSP time warp in wait helpers",
+    )
+    external.add_argument(
+        "--no-stream-agent",
+        action="store_true",
+        help="capture external agent output without streaming it live",
+    )
+    external.set_defaults(func=_live_external)
 
     score = subparsers.add_parser("score", help="score an existing run artifact directory")
     score.add_argument("run_dir")
@@ -177,6 +253,9 @@ def _live(args: argparse.Namespace) -> int:
         execution_timeout_s=args.execution_timeout,
         max_sleep_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
+        warp_threshold_s=args.warp_threshold,
+        time_warp=not args.no_time_warp,
+        live_events=True,
     )
     artifacts.append_event({"type": "run_started", "mode": "live"})
 
@@ -196,6 +275,9 @@ def _live(args: argparse.Namespace) -> int:
         execution_timeout_s=args.execution_timeout,
         max_sleep_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
+        warp_threshold_s=args.warp_threshold,
+        time_warp=not args.no_time_warp,
+        live_events=True,
     )
     exit_code = 0
 
@@ -207,9 +289,7 @@ def _live(args: argparse.Namespace) -> int:
         module.run(tools)
     except Exception as exc:
         tools.invalid_actions += 1
-        artifacts.append_event(
-            {"type": "run_failed", "reason": "agent_error", "detail": str(exc)}
-        )
+        artifacts.append_event({"type": "run_failed", "reason": "agent_error", "detail": str(exc)})
         print(f"Live agent failed: {exc}")
         exit_code = 3
 
@@ -240,6 +320,122 @@ def _live(args: argparse.Namespace) -> int:
     )
     print(f"Wrote run artifacts to {artifacts.run_dir}")
     print(f"success={result.success} score={result.score} failure_reason={result.failure_reason}")
+    return exit_code
+
+
+def _live_external(args: argparse.Namespace) -> int:
+    scenario = load_scenario(args.scenario)
+    adapter = ExternalAgentAdapter(
+        provider=args.adapter,
+        model=args.model,
+        executable=args.executable,
+        extra_args=args.agent_arg,
+        workspace=Path.cwd(),
+    )
+    run_id = args.run_id or default_run_id(f"{args.adapter}_live")
+    artifacts = RunArtifacts.create(scenario.artifacts.root_dir, run_id)
+    agent = adapter.agent_metadata
+
+    artifacts.write_manifest(scenario, agent)
+    artifacts.copy_scenario(scenario)
+    artifacts.write_run_config(
+        agent,
+        tool_api_version="0.1.0",
+        execution_timeout_s=args.execution_timeout,
+        max_sleep_s=args.max_sleep,
+        poll_interval_s=args.poll_interval,
+        warp_threshold_s=args.warp_threshold,
+        time_warp=not args.no_time_warp,
+        agent_timeout_s=args.agent_timeout or scenario.timeout_s,
+    )
+    artifacts.append_event({"type": "run_started", "mode": "live_external"})
+
+    try:
+        controller = KRPCController.connect(scenario)
+    except Exception as exc:
+        artifacts.append_event(
+            {"type": "run_failed", "reason": "no_connection", "detail": str(exc)}
+        )
+        print(f"Could not start live kRPC run: {exc}")
+        return 2
+
+    tools = LiveKRPCTools(
+        controller=controller,
+        scenario=scenario,
+        artifacts=artifacts,
+        execution_timeout_s=args.execution_timeout,
+        max_sleep_s=args.max_sleep,
+        poll_interval_s=args.poll_interval,
+        warp_threshold_s=args.warp_threshold,
+        time_warp=not args.no_time_warp,
+        live_events=True,
+    )
+    exit_code = 0
+
+    try:
+        tools.get_telemetry()
+        with ToolBridgeServer(tools) as bridge:
+            artifacts.append_event({"type": "tool_bridge_started", "url": bridge.url})
+            result = adapter.run(
+                scenario=scenario,
+                bridge_url=bridge.url,
+                timeout_s=args.agent_timeout or scenario.timeout_s,
+                stream_output=not args.no_stream_agent,
+            )
+        artifacts.write_json(
+            "agent_process.json",
+            {
+                "command": result.command,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "timed_out": result.timed_out,
+            },
+        )
+        if result.returncode != 0:
+            tools.invalid_actions += 1
+            artifacts.append_event(
+                {
+                    "type": "run_failed",
+                    "reason": "agent_process_failed",
+                    "returncode": result.returncode,
+                    "timed_out": result.timed_out,
+                }
+            )
+            exit_code = 3
+    except Exception as exc:
+        tools.invalid_actions += 1
+        artifacts.append_event({"type": "run_failed", "reason": "agent_error", "detail": str(exc)})
+        print(f"External live agent failed: {exc}")
+        exit_code = 3
+
+    try:
+        tools.record_telemetry(controller.read_telemetry())
+    except Exception as exc:
+        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+
+    artifacts.write_telemetry(tools.telemetry)
+    score = score_trace(
+        run_id=run_id,
+        scenario=scenario,
+        telemetry=tools.telemetry,
+        agent=agent,
+        harness_version=__version__,
+        invalid_actions=tools.invalid_actions,
+        action_count=len(tools.actions),
+    )
+    artifacts.write_score(score)
+    artifacts.write_summary(score)
+    artifacts.append_event(
+        {
+            "type": "run_finished",
+            "success": score.success,
+            "score": score.score,
+            "exit_code": exit_code,
+        }
+    )
+    print(f"Wrote run artifacts to {artifacts.run_dir}")
+    print(f"success={score.success} score={score.score} failure_reason={score.failure_reason}")
     return exit_code
 
 

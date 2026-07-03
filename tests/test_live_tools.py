@@ -10,14 +10,37 @@ from kspbench.telemetry import TelemetrySample
 
 class FakeController:
     def __init__(self) -> None:
+        self.space_center = SimpleNamespace(
+            active_vessel=None,
+            ut=100.0,
+            warp_calls=[],
+        )
+        self.space_center.warp_to = self._warp_to
         self.vessel = SimpleNamespace(
             name="Kerbal X",
             control=SimpleNamespace(throttle=0.0),
         )
+        self.space_center.active_vessel = self.vessel
         self.conn = SimpleNamespace(
-            space_center=SimpleNamespace(active_vessel=self.vessel),
+            space_center=self.space_center,
         )
         self.met = 0.0
+
+    def _warp_to(
+        self,
+        ut: float,
+        *,
+        max_rails_rate: int,
+        max_physics_rate: int,
+    ) -> None:
+        self.space_center.warp_calls.append(
+            {
+                "ut": ut,
+                "max_rails_rate": max_rails_rate,
+                "max_physics_rate": max_physics_rate,
+            }
+        )
+        self.space_center.ut = ut
 
     def read_telemetry(self) -> TelemetrySample:
         self.met += 1.0
@@ -85,6 +108,22 @@ def test_execute_krpc_rejects_imports(tmp_path) -> None:
     assert tools.invalid_actions == 1
 
 
+def test_execute_krpc_rejects_harness_reset_calls(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=FakeController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        artifacts=artifacts,
+    )
+
+    result = tools.executeKRPC("space_center.revert_to_launch()")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "KRPCExecutionError"
+    assert "reserved for the benchmark harness" in result["error"]
+    assert tools.invalid_actions == 1
+
+
 def test_observation_tools_return_snapshots(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
@@ -99,3 +138,23 @@ def test_observation_tools_return_snapshots(tmp_path) -> None:
     assert telemetry["body"] == "Kerbin"
     assert state["name"] == "Kerbal X"
     assert len(tools.telemetry) == 1
+
+
+def test_wait_uses_time_warp_above_threshold(tmp_path) -> None:
+    controller = FakeController()
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=controller,
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        artifacts=artifacts,
+        warp_threshold_s=5.0,
+    )
+
+    result = tools.wait(10.0)
+
+    assert result["ok"] is True
+    assert result["time_warp_used"] is True
+    assert controller.space_center.warp_calls == [
+        {"ut": 110.0, "max_rails_rate": 100000, "max_physics_rate": 4}
+    ]
+    assert tools.actions[0]["type"] == "wait"

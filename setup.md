@@ -148,6 +148,53 @@ runs/<run_id>/
   summary.txt
 ```
 
+## Running External CLI Agents
+
+KSP-bench can also run live missions through terminal coding agents. The harness
+starts a localhost tool bridge, then launches the selected CLI with instructions
+for calling:
+
+- `GET /telemetry`
+- `GET /vehicle`
+- `POST /execute`
+
+The bridge is the only supported way for the external agent to read telemetry or
+send kRPC snippets. The harness still records actions, telemetry, score, and an
+`agent_process.json` file with the command, stdout, stderr, return code, and
+timeout status.
+
+Codex CLI:
+
+```bash
+uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
+  --adapter codex \
+  --model gpt-5.4
+```
+
+Codex is invoked with `codex exec`, `--sandbox workspace-write`, and an ephemeral
+session. This follows the current Codex noninteractive interface and leaves room
+to add the Codex SDK later for richer event handling.
+
+opencode CLI:
+
+```bash
+uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
+  --adapter opencode \
+  --model openai/gpt-5.4
+```
+
+opencode is invoked with `opencode run --dir <repo>`. Pass additional CLI flags
+with repeated `--agent-arg`, for example:
+
+```bash
+uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
+  --adapter opencode \
+  --agent-arg=--format \
+  --agent-arg json
+```
+
+Both CLIs must already be installed and authenticated before the run starts.
+
 ## Troubleshooting
 
 If the harness cannot connect:
