@@ -61,10 +61,24 @@ Start with a small CLI:
 ```bash
 uv run kspbench doctor
 uv run kspbench run scenarios/kerbin_orbit_80km.yaml --agent baselines/gravity_turn
+uv run kspbench live scenarios/kerbin_orbit_80km.yaml --agent baselines/live_gravity_turn.py
 uv run kspbench score runs/<run_id>
 ```
 
 `doctor` should check Python dependencies, expected files, and kRPC reachability.
+
+`run` executes the original scripted local-agent flow. `live` executes a closed-loop
+agent against three kRPC-facing tools:
+
+- `getTelemetry()` returns a current flight/orbit telemetry snapshot.
+- `getVehicleState()` returns control, staging, engine, and resource state.
+- `executeKRPC(code, timeout_s=...)` runs a bounded Python snippet with `conn`,
+  `space_center`, `vessel`, `sleep(...)`, and `wait_until(...)` in scope.
+
+`executeKRPC` snippets are logged to `action_log.jsonl`; observation calls and tool
+results are logged to `events.jsonl`. The helper `wait_until` is the preferred way
+to let an agent wait for conditions such as apoapsis, periapsis, fuel depletion, or
+time to apoapsis while still sampling telemetry for the final trace.
 
 ## Config
 

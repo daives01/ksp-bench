@@ -59,6 +59,7 @@ This file tracks the immediate implementation work for the first fixed-rocket fl
 
 - [x] Define the constrained SDK exposed to agents.
 - [x] Start with Python agents loaded from trusted local files.
+- [x] Add a live closed-loop Python agent interface with telemetry, vehicle-state, and bounded kRPC execution tools.
 - [ ] Add generated-code execution only after the local harness is stable.
 - [ ] Decide later whether agents submit Python code, JSON action plans, or both.
 - [ ] Add sandbox boundaries for generated code.
