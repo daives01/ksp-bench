@@ -4,9 +4,8 @@ KSP-bench is a small benchmark harness for testing whether agents can fly a fixe
 
 The repo is intentionally split into a few durable parts:
 
-- `src/kspbench/`: harness code, scoring, telemetry, live kRPC tools, and external-agent adapters.
+- `src/kspbench/`: harness code, scoring, telemetry, live kRPC tools, and the OpenCode agent adapter.
 - `scenarios/`: benchmark scenario definitions.
-- `baselines/`: simple local Python agents for smoke tests and reference behavior.
 - `env/ckan/`: reproducible KSP mod environment metadata.
 - `tests/`: fast unit tests that do not require KSP.
 
@@ -44,27 +43,11 @@ uv run pytest
 uv run ruff check
 ```
 
-Run a dry local baseline without KSP:
+Run OpenCode against KSP through locked-down custom tools:
 
 ```bash
-uv run kspbench run scenarios/kerbin_orbit_80km.yaml \
-  --agent baselines/gravity_turn.py \
-  --dry-run
-```
-
-Run a live Python agent against KSP and kRPC:
-
-```bash
-uv run kspbench live scenarios/kerbin_orbit_80km.yaml \
-  --agent baselines/live_gravity_turn.py
-```
-
-Run an external CLI agent through the localhost tool bridge:
-
-```bash
-uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
-  --adapter codex \
-  --model gpt-5.4
+uv run kspbench run scenarios/kerbin_orbit_80km.toml \
+  --model openai/gpt-5.4
 ```
 
 Score or summarize existing run artifacts:
@@ -76,6 +59,6 @@ uv run kspbench summarize runs
 
 ## Git Hygiene
 
-Commit source, tests, scenarios, baseline agents, the CKAN environment file, `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore`, and this README.
+Commit source, tests, scenarios, the CKAN environment file, `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore`, and this README.
 
 Do not commit local environments, caches, logs, screenshots, recordings, KSP save/craft exports, `.env` files, or generated `runs/` artifacts. If a run result becomes important for analysis, copy only the curated summary into a separate tracked report.

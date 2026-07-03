@@ -54,7 +54,7 @@ Avoid adding:
 - Life-support mods.
 - Visual or physics overhaul mods.
 
-Those can be useful later for baselines or alternate tracks, but v0 should keep the environment minimal.
+Those can be useful later for alternate tracks, but v0 should keep the environment minimal.
 
 After installing mods, export or record the installed CKAN identifiers and versions. The repo should eventually include something like:
 
@@ -113,7 +113,7 @@ Once implemented, the harness should expose commands similar to:
 
 ```bash
 uv run kspbench doctor
-uv run kspbench run scenarios/kerbin_orbit_80km.yaml --agent baselines/gravity_turn
+uv run kspbench run scenarios/kerbin_orbit_80km.toml --model openai/gpt-5.4
 ```
 
 `doctor` should verify that Python dependencies are installed and that kRPC is reachable.
@@ -141,59 +141,46 @@ Expected artifacts:
 
 ```text
 runs/<run_id>/
-  scenario.yaml
+  scenario.toml
   action_log.jsonl
   telemetry.csv
   score.json
   summary.txt
 ```
 
-## Running External CLI Agents
+## Running OpenCode
 
-KSP-bench can also run live missions through terminal coding agents. The harness
-starts a localhost tool bridge, then launches the selected CLI with instructions
-for calling:
+KSP-bench runs live missions through OpenCode. The harness starts a localhost
+tool bridge, generates a throwaway OpenCode workspace outside this repo, and
+exposes the bridge as custom OpenCode tools:
 
-- `GET /telemetry`
-- `GET /vehicle`
-- `POST /execute`
+- `ksp_telemetry`
+- `ksp_vehicle`
+- `ksp_execute`
+- `ksp_wait`
 
-The bridge is the only supported way for the external agent to read telemetry or
-send kRPC snippets. The harness still records actions, telemetry, score, and an
-`agent_process.json` file with the command, stdout, stderr, return code, and
-timeout status.
-
-Codex CLI:
-
-```bash
-uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
-  --adapter codex \
-  --model gpt-5.4
-```
-
-Codex is invoked with `codex exec`, `--sandbox workspace-write`, and an ephemeral
-session. This follows the current Codex noninteractive interface and leaves room
-to add the Codex SDK later for richer event handling.
-
-opencode CLI:
+The generated `opencode.json` denies all OpenCode tools by default and allows
+only `ksp_*`, so the model does not get shell, file editing, repo reads, web
+fetching, or direct access to this workspace. The harness still records actions,
+telemetry, score, and an `agent_process.json` file with the command, stdout,
+stderr, return code, and timeout status.
 
 ```bash
-uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
-  --adapter opencode \
+uv run kspbench run scenarios/kerbin_orbit_80km.toml \
   --model openai/gpt-5.4
 ```
 
-opencode is invoked with `opencode run --dir <repo>`. Pass additional CLI flags
-with repeated `--agent-arg`, for example:
+OpenCode is invoked with `opencode run --dir <throwaway-workspace> --agent
+kspbench --auto`. Pass additional CLI flags with repeated `--agent-arg`, for
+example:
 
 ```bash
-uv run kspbench live-external scenarios/kerbin_orbit_80km.yaml \
-  --adapter opencode \
+uv run kspbench run scenarios/kerbin_orbit_80km.toml \
   --agent-arg=--format \
   --agent-arg json
 ```
 
-Both CLIs must already be installed and authenticated before the run starts.
+OpenCode must already be installed and authenticated before the run starts.
 
 ## Troubleshooting
 
