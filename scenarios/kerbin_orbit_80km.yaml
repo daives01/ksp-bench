@@ -2,7 +2,7 @@ instance_id: kerbin_orbit_80km_fixed_rocket_v0
 benchmark_version: 0.0.1
 body: Kerbin
 launch_site: KSC launchpad
-vessel_name: KSP-bench fixed rocket v0
+vessel_name: Kerbal X
 timeout_s: 600
 target_orbit:
   apoapsis_min_m: 75000
@@ -26,6 +26,6 @@ artifacts:
   telemetry_interval_s: 1
   root_dir: runs
 krpc:
-  host: 127.0.0.1
+  host: 100.126.59.95
   rpc_port: 50000
   stream_port: 50001
