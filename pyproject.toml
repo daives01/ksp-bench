@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "ksp-bench"
 version = "0.0.1"
 description = "Embodied-agent benchmark harness for Kerbal Space Program missions."
-readme = "plan.md"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "KSP-bench contributors" }]
