@@ -12,6 +12,7 @@ from kspbench import __version__
 from kspbench.artifacts import RunArtifacts, default_run_id
 from kspbench.config import Scenario, load_scenario
 from kspbench.krpc_client import KRPCController, check_krpc_package, check_krpc_reachable
+from kspbench.live import LiveKRPCTools
 from kspbench.scoring import score_trace
 from kspbench.sdk import MissionContext
 from kspbench.telemetry import TelemetrySample
@@ -45,6 +46,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="use fake telemetry instead of live KSP",
     )
     run.set_defaults(func=_run)
+
+    live = subparsers.add_parser(
+        "live",
+        help="run a live closed-loop Python agent against kRPC tools",
+    )
+    live.add_argument("scenario")
+    live.add_argument("--agent", required=True, help="path to a local live Python agent module")
+    live.add_argument("--run-id")
+    live.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=30.0,
+        help="default max wall-clock seconds for each executeKRPC call",
+    )
+    live.add_argument(
+        "--max-sleep",
+        type=float,
+        default=240.0,
+        help="max seconds allowed for executeKRPC sleep/wait helpers",
+    )
+    live.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="seconds between telemetry samples during sleep/wait helpers",
+    )
+    live.set_defaults(func=_live)
 
     score = subparsers.add_parser("score", help="score an existing run artifact directory")
     score.add_argument("run_dir")
@@ -132,6 +160,87 @@ def _run(args: argparse.Namespace) -> int:
     print(f"Wrote run artifacts to {artifacts.run_dir}")
     print(f"success={result.success} score={result.score} failure_reason={result.failure_reason}")
     return 0
+
+
+def _live(args: argparse.Namespace) -> int:
+    scenario = load_scenario(args.scenario)
+    agent_path = Path(args.agent)
+    run_id = args.run_id or default_run_id(f"{agent_path.stem}_live")
+    agent = {"name": agent_path.stem, "model": None, "adapter": "live_python_krpc"}
+    artifacts = RunArtifacts.create(scenario.artifacts.root_dir, run_id)
+
+    artifacts.write_manifest(scenario, agent)
+    artifacts.copy_scenario(scenario)
+    artifacts.write_run_config(
+        agent,
+        tool_api_version="0.1.0",
+        execution_timeout_s=args.execution_timeout,
+        max_sleep_s=args.max_sleep,
+        poll_interval_s=args.poll_interval,
+    )
+    artifacts.append_event({"type": "run_started", "mode": "live"})
+
+    try:
+        controller = KRPCController.connect(scenario)
+    except Exception as exc:
+        artifacts.append_event(
+            {"type": "run_failed", "reason": "no_connection", "detail": str(exc)}
+        )
+        print(f"Could not start live kRPC run: {exc}")
+        return 2
+
+    tools = LiveKRPCTools(
+        controller=controller,
+        scenario=scenario,
+        artifacts=artifacts,
+        execution_timeout_s=args.execution_timeout,
+        max_sleep_s=args.max_sleep,
+        poll_interval_s=args.poll_interval,
+    )
+    exit_code = 0
+
+    try:
+        tools.get_telemetry()
+        module = _load_agent(agent_path)
+        if not hasattr(module, "run"):
+            raise AttributeError(f"{agent_path} must define run(tools)")
+        module.run(tools)
+    except Exception as exc:
+        tools.invalid_actions += 1
+        artifacts.append_event(
+            {"type": "run_failed", "reason": "agent_error", "detail": str(exc)}
+        )
+        print(f"Live agent failed: {exc}")
+        exit_code = 3
+
+    try:
+        tools.record_telemetry(controller.read_telemetry())
+    except Exception as exc:
+        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+
+    artifacts.write_telemetry(tools.telemetry)
+    result = score_trace(
+        run_id=run_id,
+        scenario=scenario,
+        telemetry=tools.telemetry,
+        agent=agent,
+        harness_version=__version__,
+        invalid_actions=tools.invalid_actions,
+        action_count=len(tools.actions),
+    )
+    artifacts.write_score(result)
+    artifacts.write_summary(result)
+    artifacts.append_event(
+        {
+            "type": "run_finished",
+            "success": result.success,
+            "score": result.score,
+            "exit_code": exit_code,
+        }
+    )
+    print(f"Wrote run artifacts to {artifacts.run_dir}")
+    print(f"success={result.success} score={result.score} failure_reason={result.failure_reason}")
+    return exit_code
 
 
 def _score(args: argparse.Namespace) -> int:

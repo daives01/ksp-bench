@@ -119,6 +119,33 @@ class KRPCController:
             intact=True,
         )
 
+    def read_vehicle_state(self) -> dict[str, Any]:
+        vessel = self.vessel
+        control = vessel.control
+        current_stage = _safe_int(lambda: control.current_stage, default=0)
+        resources = vessel.resources
+        resource_names = ("LiquidFuel", "Oxidizer", "SolidFuel", "ElectricCharge", "MonoPropellant")
+
+        return {
+            "name": _safe_value(lambda: vessel.name, default="unknown"),
+            "current_stage": current_stage,
+            "next_stage_available": current_stage > 0,
+            "throttle": _safe_float(lambda: control.throttle),
+            "sas": _safe_bool(lambda: control.sas),
+            "rcs": _safe_bool(lambda: control.rcs),
+            "controllable": _is_controllable(vessel),
+            "mass": _safe_float(lambda: vessel.mass),
+            "dry_mass": _safe_float(lambda: vessel.dry_mass),
+            "available_thrust": _safe_float(lambda: vessel.available_thrust),
+            "max_thrust": _safe_float(lambda: vessel.max_thrust),
+            "resources": {
+                resource_name: _resource_amount(resources, resource_name)
+                for resource_name in resource_names
+            },
+            "stages": _stage_resources(vessel, current_stage, resource_names),
+            "active_engines": _active_engines(vessel),
+        }
+
 
 def _resource_amount(resources: Any, name: str) -> float:
     try:
@@ -139,3 +166,68 @@ def _is_controllable(vessel: Any) -> bool:
             return bool(vessel.parts.controlling)
         except Exception:
             return True
+
+
+def _stage_resources(
+    vessel: Any, current_stage: int, resource_names: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    stages: list[dict[str, Any]] = []
+    for stage in range(max(current_stage, 0) + 1):
+        try:
+            resources = vessel.resources_in_decouple_stage(stage, cumulative=False)
+        except Exception:
+            continue
+        stages.append(
+            {
+                "stage": stage,
+                "resources": {
+                    resource_name: _resource_amount(resources, resource_name)
+                    for resource_name in resource_names
+                },
+            }
+        )
+    return stages
+
+
+def _active_engines(vessel: Any) -> list[dict[str, Any]]:
+    engines: list[dict[str, Any]] = []
+    try:
+        engine_parts = vessel.parts.engines
+    except Exception:
+        return engines
+
+    for index, engine in enumerate(engine_parts):
+        if not _safe_bool(lambda engine=engine: engine.active):
+            continue
+        engines.append(
+            {
+                "index": index,
+                "part_name": _safe_value(lambda engine=engine: engine.part.name, default="unknown"),
+                "has_fuel": _safe_bool(lambda engine=engine: engine.has_fuel),
+                "thrust": _safe_float(lambda engine=engine: engine.thrust),
+                "max_thrust": _safe_float(lambda engine=engine: engine.max_thrust),
+                "specific_impulse": _safe_float(
+                    lambda engine=engine: engine.specific_impulse, default=0.0
+                ),
+            }
+        )
+    return engines
+
+
+def _safe_value(getter: Any, *, default: Any) -> Any:
+    try:
+        return getter()
+    except Exception:
+        return default
+
+
+def _safe_float(getter: Any, default: float = 0.0) -> float:
+    return float(_safe_value(getter, default=default))
+
+
+def _safe_int(getter: Any, default: int = 0) -> int:
+    return int(_safe_value(getter, default=default))
+
+
+def _safe_bool(getter: Any, default: bool = False) -> bool:
+    return bool(_safe_value(getter, default=default))

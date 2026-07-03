@@ -57,8 +57,9 @@ class RunArtifacts:
             return
         shutil.copyfile(scenario.source_path, self.run_dir / "scenario.yaml")
 
-    def write_run_config(self, agent: dict[str, str | None]) -> None:
-        self.write_json("run_config.json", {"agent": agent, "tool_api_version": "0.0.1"})
+    def write_run_config(self, agent: dict[str, str | None], **extra: Any) -> None:
+        payload = {"agent": agent, "tool_api_version": "0.0.1", **extra}
+        self.write_json("run_config.json", payload)
 
     def append_event(self, event: dict[str, Any]) -> None:
         self.append_jsonl("events.jsonl", event)
