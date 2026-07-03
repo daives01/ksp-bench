@@ -10,7 +10,7 @@ from kspbench.telemetry import TelemetrySample
 
 
 def test_writes_score_and_summary(tmp_path: Path) -> None:
-    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.yaml"))
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
     artifacts = RunArtifacts.create(tmp_path, "run-1")
     sample = TelemetrySample(
         mission_elapsed_s=10.0,
@@ -39,7 +39,7 @@ def test_writes_score_and_summary(tmp_path: Path) -> None:
         run_id="run-1",
         scenario=scenario,
         telemetry=[sample],
-        agent={"name": "test", "model": None, "adapter": "local_python"},
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
         harness_version="test",
     )
     artifacts.write_telemetry([sample])

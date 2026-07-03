@@ -1,0 +1,23 @@
+instance_id = "kerbin_orbit_80km_fixed_rocket_v0"
+benchmark_version = "0.0.1"
+body = "Kerbin"
+vessel_name = "Kerbal X"
+timeout_s = 600
+
+[target_orbit]
+apoapsis_min_m = 75000
+apoapsis_max_m = 85000
+periapsis_min_m = 70000
+
+[scoring]
+cleared_tower_m = 100
+reached_10km_m = 10000
+reached_space_m = 70000
+target_orbit_points = 30
+fuel_bonus_points = 5
+invalid_action_penalty = 5
+
+[krpc]
+host = "100.126.59.95"
+rpc_port = 50000
+stream_port = 50001

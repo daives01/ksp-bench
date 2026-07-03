@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import socket
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,27 +65,6 @@ class KRPCController:
             stream_port=scenario.krpc.stream_port,
         )
         return cls(conn, scenario)
-
-    def apply_action(self, action: dict[str, Any]) -> None:
-        action_type = action["type"]
-        control = self.vessel.control
-        if action_type == "set_throttle":
-            control.throttle = float(action["value"])
-        elif action_type == "set_sas":
-            control.sas = bool(action["enabled"])
-        elif action_type == "set_rcs":
-            control.rcs = bool(action["enabled"])
-        elif action_type == "stage":
-            control.activate_next_stage()
-        elif action_type == "set_attitude":
-            autopilot = self.vessel.auto_pilot
-            autopilot.target_pitch_and_heading(float(action["pitch"]), float(action["heading"]))
-            autopilot.target_roll = float(action.get("roll", 0.0))
-            autopilot.engage()
-        elif action_type == "wait":
-            time.sleep(float(action["seconds"]))
-        else:
-            raise ValueError(f"unsupported live action: {action_type}")
 
     def read_telemetry(self) -> TelemetrySample:
         vessel = self.vessel

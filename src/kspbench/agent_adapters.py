@@ -3,16 +3,48 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib import resources
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from kspbench.config import Scenario
 from kspbench.live import LiveKRPCTools
+
+AGENT_PROMPT_TEMPLATE = """You are flying a Kerbal Space Program benchmark mission.
+
+Goal:
+- Reach a stable orbit around {body}.
+- Target apoapsis between {apoapsis_min_m:.0f}m and {apoapsis_max_m:.0f}m.
+- Target periapsis at least {periapsis_min_m:.0f}m.
+- Complete within {timeout_s:.0f}s mission elapsed time.
+
+Use only the OpenCode KSP tools exposed by the benchmark harness:
+- ksp_telemetry: read the latest telemetry snapshot.
+- ksp_vehicle: inspect the current vessel state.
+- ksp_execute: run a short kRPC Python snippet.
+- ksp_wait: advance mission time while the harness records telemetry. The harness
+  may use KSP time warp for longer waits.
+
+The ksp_execute code runs inside the harness with these names available:
+- conn, space_center, vessel
+- getTelemetry(), getVehicleState()
+- sleep(seconds), wait(seconds), wait_until(condition, timeout_s=seconds)
+- math is already available; imports are not allowed.
+
+Do not create or modify files for this mission. Interact with KSP only through the
+KSP tools. Use short execute snippets, inspect telemetry after maneuvers, and stop
+when the vehicle is in the target orbit or cannot continue safely.
+Do not call KSP reset/load APIs such as revert_to_launch, revert_to_editor, quickload,
+quicksave, or load. The benchmark harness handles all resets between runs.
+KSP manual controls like vessel.control.pitch are stick deflections, not attitude targets;
+use vessel.auto_pilot.target_pitch_and_heading(...) when you need a specific pitch/heading.
+Prefer orbital_speed_m_s for speed checks; surface_speed_m_s may be zero for some
+KSP reference-frame states.
+"""
 
 
 @dataclass(frozen=True)
@@ -24,28 +56,24 @@ class ExternalAgentResult:
     timed_out: bool = False
 
 
-class ExternalAgentAdapter:
+class OpenCodeAgentAdapter:
     def __init__(
         self,
         *,
-        provider: str,
         model: str | None = None,
         executable: str | None = None,
         extra_args: list[str] | None = None,
-        workspace: Path | None = None,
     ) -> None:
-        self.provider = provider
         self.model = model
-        self.executable = executable or provider
+        self.executable = executable or "opencode"
         self.extra_args = extra_args or []
-        self.workspace = workspace or Path.cwd()
 
     @property
     def agent_metadata(self) -> dict[str, str | None]:
         return {
-            "name": self.provider,
+            "name": "opencode",
             "model": self.model,
-            "adapter": f"{self.provider}_cli_live_krpc",
+            "adapter": "opencode_cli_custom_tools_live_krpc",
         }
 
     def run(
@@ -56,58 +84,167 @@ class ExternalAgentAdapter:
         timeout_s: float,
         stream_output: bool = True,
     ) -> ExternalAgentResult:
-        prompt = build_agent_prompt(scenario=scenario, bridge_url=bridge_url)
-        command = self._command(prompt)
-        if stream_output:
-            return _run_streaming(command, cwd=self.workspace, timeout_s=timeout_s)
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
+        prompt = build_agent_prompt(scenario=scenario)
+        with tempfile.TemporaryDirectory(prefix="kspbench-opencode-") as workspace:
+            workspace_path = Path(workspace)
+            write_opencode_workspace(workspace_path, bridge_url=bridge_url, model=self.model)
+            command = self._command(prompt, workspace=workspace_path)
+            if stream_output:
+                return _run_streaming(command, cwd=workspace_path, timeout_s=timeout_s)
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=workspace_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+            except subprocess.TimeoutExpired as exc:
+                return ExternalAgentResult(
+                    command=command,
+                    returncode=124,
+                    stdout=exc.stdout or "",
+                    stderr=exc.stderr or "",
+                    timed_out=True,
+                )
             return ExternalAgentResult(
                 command=command,
-                returncode=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
-                timed_out=True,
+                returncode=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
             )
-        return ExternalAgentResult(
-            command=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
 
-    def _command(self, prompt: str) -> list[str]:
-        if self.provider == "codex":
-            command = [
-                self.executable,
-                "exec",
-                "--sandbox",
-                "workspace-write",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--cd",
-                str(self.workspace),
-            ]
-            if self.model:
-                command.extend(["--model", self.model])
-            command.extend(self.extra_args)
-            command.append(prompt)
-            return command
-        if self.provider == "opencode":
-            command = [self.executable, "run", "--dir", str(self.workspace)]
-            if self.model:
-                command.extend(["--model", self.model])
-            command.extend(self.extra_args)
-            command.append(prompt)
-            return command
-        raise ValueError(f"unsupported external adapter: {self.provider}")
+    def _command(self, prompt: str, *, workspace: Path) -> list[str]:
+        command = [
+            self.executable,
+            "run",
+            "--dir",
+            str(workspace),
+            "--agent",
+            "kspbench",
+            "--auto",
+        ]
+        if self.model:
+            command.extend(["--model", self.model])
+        command.extend(self.extra_args)
+        command.append(prompt)
+        return command
+
+
+def write_opencode_workspace(
+    workspace: Path,
+    *,
+    bridge_url: str,
+    model: str | None = None,
+) -> None:
+    tools_dir = workspace / ".opencode" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    (workspace / "opencode.json").write_text(
+        json.dumps(_opencode_config(model), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (tools_dir / "ksp.ts").write_text(_opencode_tools_source(bridge_url), encoding="utf-8")
+
+
+def _opencode_config(model: str | None) -> dict[str, Any]:
+    permissions: dict[str, str] = {
+        "*": "deny",
+        "bash": "deny",
+        "edit": "deny",
+        "read": "deny",
+        "grep": "deny",
+        "glob": "deny",
+        "lsp": "deny",
+        "skill": "deny",
+        "task": "deny",
+        "todowrite": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "question": "deny",
+        "external_directory": "deny",
+        "doom_loop": "deny",
+        "ksp_*": "allow",
+    }
+    agent_config: dict[str, Any] = {
+        "description": "Fly a KSP benchmark vessel using only harness-provided kRPC tools.",
+        "mode": "primary",
+        "permission": permissions,
+    }
+    if model:
+        agent_config["model"] = model
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": permissions,
+        "agent": {"kspbench": agent_config},
+    }
+
+
+def _opencode_tools_source(bridge_url: str) -> str:
+    bridge_literal = json.dumps(bridge_url)
+    return f"""import {{ tool }} from "@opencode-ai/plugin"
+
+const BRIDGE_URL = {bridge_literal}
+
+async function bridge(path: string, init?: RequestInit): Promise<string> {{
+  const response = await fetch(`${{BRIDGE_URL}}${{path}}`, init)
+  const body = await response.text()
+  if (!response.ok) return body || `bridge request failed: ${{response.status}}`
+  return body
+}}
+
+async function post(path: string, payload: unknown): Promise<string> {{
+  return bridge(path, {{
+    method: "POST",
+    headers: {{ "Content-Type": "application/json" }},
+    body: JSON.stringify(payload),
+  }})
+}}
+
+export const telemetry = tool({{
+  description: "Read the latest KSP telemetry snapshot.",
+  args: {{}},
+  async execute() {{
+    return bridge("/telemetry")
+  }},
+}})
+
+export const vehicle = tool({{
+  description: "Read the current vessel state and controllable parts summary.",
+  args: {{}},
+  async execute() {{
+    return bridge("/vehicle")
+  }},
+}})
+
+export const execute = tool({{
+  description: "Run a short, sandboxed kRPC Python snippet in the benchmark harness.",
+  args: {{
+    code: tool.schema.string().describe(
+      "Python code using conn, space_center, vessel, telemetry helpers, and wait helpers.",
+    ),
+    timeout_s: tool.schema.number().optional().describe(
+      "Optional wall-clock timeout in seconds.",
+    ),
+  }},
+  async execute(args) {{
+    return post("/execute", args)
+  }},
+}})
+
+export const wait = tool({{
+  description:
+    "Advance mission time while the harness records telemetry. Long waits may use KSP time warp.",
+  args: {{
+    seconds: tool.schema.number().describe("Mission seconds to wait."),
+    poll_interval_s: tool.schema.number().optional().describe(
+      "Optional telemetry polling interval in seconds.",
+    ),
+  }},
+  async execute(args) {{
+    return post("/wait", args)
+  }},
+}})
+"""
 
 
 class ToolBridgeServer:
@@ -216,29 +353,13 @@ class ToolBridgeServer:
         return Handler
 
 
-def build_agent_prompt(*, scenario: Scenario, bridge_url: str) -> str:
-    example_payload = json.dumps(
-        {
-            "code": "\n".join(
-                [
-                    "vessel.control.throttle = 1.0",
-                    "vessel.control.activate_next_stage()",
-                    "sleep(5)",
-                    "result = getTelemetry()",
-                ]
-            )
-        },
-        separators=(",", ":"),
-    )
-    template = resources.files("kspbench.prompts").joinpath("live_external.md").read_text()
-    return template.format(
+def build_agent_prompt(*, scenario: Scenario) -> str:
+    return AGENT_PROMPT_TEMPLATE.format(
         body=scenario.body,
         apoapsis_min_m=scenario.target_orbit.apoapsis_min_m,
         apoapsis_max_m=scenario.target_orbit.apoapsis_max_m,
         periapsis_min_m=scenario.target_orbit.periapsis_min_m,
         timeout_s=scenario.timeout_s,
-        bridge_url=bridge_url,
-        example_payload=example_payload,
     )
 
 

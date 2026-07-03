@@ -79,7 +79,7 @@ def test_execute_krpc_runs_snippet_and_logs_action(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
         controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=artifacts,
     )
 
@@ -97,7 +97,7 @@ def test_execute_krpc_rejects_imports(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
         controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=artifacts,
     )
 
@@ -112,7 +112,7 @@ def test_execute_krpc_rejects_harness_reset_calls(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
         controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=artifacts,
     )
 
@@ -128,7 +128,7 @@ def test_observation_tools_return_snapshots(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
         controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=artifacts,
     )
 
@@ -145,7 +145,7 @@ def test_wait_uses_time_warp_above_threshold(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
         controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=artifacts,
         warp_threshold_s=5.0,
     )

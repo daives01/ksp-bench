@@ -53,9 +53,8 @@ class RunArtifacts:
 
     def copy_scenario(self, scenario: Scenario) -> None:
         if scenario.source_path is None:
-            self.write_json("scenario.json", asdict(scenario))
-            return
-        shutil.copyfile(scenario.source_path, self.run_dir / "scenario.yaml")
+            raise ValueError("scenario source path is required for run artifacts")
+        shutil.copyfile(scenario.source_path, self.run_dir / "scenario.toml")
 
     def write_run_config(self, agent: dict[str, str | None], **extra: Any) -> None:
         payload = {"agent": agent, "tool_api_version": "0.0.1", **extra}

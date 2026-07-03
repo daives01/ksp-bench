@@ -35,13 +35,13 @@ def _sample(**overrides):
 
 
 def test_scores_successful_orbit() -> None:
-    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.yaml"))
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
 
     result = score_trace(
         run_id="test",
         scenario=scenario,
         telemetry=[_sample(altitude_m=1000.0), _sample()],
-        agent={"name": "test", "model": None, "adapter": "local_python"},
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
         harness_version="test",
     )
 
@@ -51,13 +51,13 @@ def test_scores_successful_orbit() -> None:
 
 
 def test_reports_periapsis_failure() -> None:
-    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.yaml"))
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
 
     result = score_trace(
         run_id="test",
         scenario=scenario,
         telemetry=[_sample(periapsis_m=-50000.0)],
-        agent={"name": "test", "model": None, "adapter": "local_python"},
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
         harness_version="test",
     )
 

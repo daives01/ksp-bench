@@ -4,7 +4,12 @@ import json
 import urllib.request
 from types import SimpleNamespace
 
-from kspbench.agent_adapters import ExternalAgentAdapter, ToolBridgeServer, build_agent_prompt
+from kspbench.agent_adapters import (
+    OpenCodeAgentAdapter,
+    ToolBridgeServer,
+    build_agent_prompt,
+    write_opencode_workspace,
+)
 from kspbench.artifacts import RunArtifacts
 from kspbench.config import load_scenario
 from kspbench.live import LiveKRPCTools
@@ -78,58 +83,64 @@ class FakeController:
         }
 
 
-def test_codex_command_uses_noninteractive_exec(tmp_path) -> None:
-    adapter = ExternalAgentAdapter(
-        provider="codex",
-        model="gpt-5.4",
-        executable="codex-test",
-        workspace=tmp_path,
-    )
-
-    command = adapter._command("fly the rocket")
-
-    assert command[:2] == ["codex-test", "exec"]
-    assert "--sandbox" in command
-    assert "workspace-write" in command
-    assert "--ephemeral" in command
-    assert "--model" in command
-    assert "gpt-5.4" in command
-    assert command[-1] == "fly the rocket"
-
-
-def test_opencode_command_uses_run_mode(tmp_path) -> None:
-    adapter = ExternalAgentAdapter(
-        provider="opencode",
+def test_opencode_command_uses_locked_agent_and_isolated_workspace(tmp_path) -> None:
+    adapter = OpenCodeAgentAdapter(
         model="openai/gpt-5.4",
         executable="opencode-test",
         extra_args=["--format", "json"],
-        workspace=tmp_path,
     )
 
-    command = adapter._command("fly the rocket")
+    command = adapter._command("fly the rocket", workspace=tmp_path)
 
     assert command[:2] == ["opencode-test", "run"]
     assert "--dir" in command
+    assert str(tmp_path) in command
+    assert "--agent" in command
+    assert "kspbench" in command
+    assert "--auto" in command
     assert "--format" in command
     assert "json" in command
     assert command[-1] == "fly the rocket"
 
 
-def test_prompt_includes_bridge_contract() -> None:
-    scenario = load_scenario("scenarios/kerbin_orbit_80km.yaml")
+def test_opencode_workspace_denies_builtin_tools(tmp_path) -> None:
+    write_opencode_workspace(
+        tmp_path,
+        bridge_url="http://127.0.0.1:1234",
+        model="openai/gpt-5.4",
+    )
 
-    prompt = build_agent_prompt(scenario=scenario, bridge_url="http://127.0.0.1:1234")
+    config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+    tool_source = (tmp_path / ".opencode" / "tools" / "ksp.ts").read_text(encoding="utf-8")
 
-    assert "GET http://127.0.0.1:1234/telemetry" in prompt
-    assert "POST http://127.0.0.1:1234/execute" in prompt
-    assert "POST http://127.0.0.1:1234/wait" in prompt
+    assert config["permission"]["*"] == "deny"
+    assert config["permission"]["bash"] == "deny"
+    assert config["permission"]["read"] == "deny"
+    assert config["permission"]["edit"] == "deny"
+    assert config["permission"]["external_directory"] == "deny"
+    assert config["permission"]["ksp_*"] == "allow"
+    assert config["agent"]["kspbench"]["permission"]["ksp_*"] == "allow"
+    assert config["agent"]["kspbench"]["model"] == "openai/gpt-5.4"
+    assert "http://127.0.0.1:1234" in tool_source
+    assert "export const telemetry" in tool_source
+    assert "export const execute" in tool_source
+
+
+def test_prompt_names_custom_tools_not_raw_http() -> None:
+    scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
+
+    prompt = build_agent_prompt(scenario=scenario)
+
+    assert "ksp_telemetry" in prompt
+    assert "ksp_execute" in prompt
+    assert "curl" not in prompt
     assert "vessel" in prompt
 
 
 def test_tool_bridge_exposes_telemetry_and_execute(tmp_path) -> None:
     tools = LiveKRPCTools(
         controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.yaml"),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
         artifacts=RunArtifacts.create(tmp_path, "bridge"),
     )
 
