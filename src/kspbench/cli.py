@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 from kspbench import __version__
@@ -66,8 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--execution-timeout",
         type=float,
-        default=30.0,
+        default=15.0,
         help="default max wall-clock seconds for each ksp_execute call",
+    )
+    run.add_argument(
+        "--task-timeout",
+        type=float,
+        default=180.0,
+        help="default max wall-clock seconds for the background control task",
     )
     run.add_argument(
         "--max-sleep",
@@ -88,22 +95,89 @@ def build_parser() -> argparse.ArgumentParser:
         help="mission seconds between downsampled telemetry waypoints",
     )
     run.add_argument(
-        "--warp-threshold",
-        type=float,
-        default=10.0,
-        help="minimum wait seconds before attempting KSP time warp",
-    )
-    run.add_argument(
-        "--no-time-warp",
-        action="store_true",
-        help="disable KSP time warp in wait helpers",
-    )
-    run.add_argument(
         "--no-stream-agent",
         action="store_true",
         help="capture OpenCode output without streaming it live",
     )
     run.set_defaults(func=_run)
+
+    batch = subparsers.add_parser(
+        "batch",
+        help="queue multiple live benchmark runs across one or more OpenCode models",
+    )
+    batch.add_argument("scenario")
+    batch.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        help="OpenCode model name to run; repeat for multiple models",
+    )
+    batch.add_argument(
+        "--models-file",
+        help="TOML file with a models = [...] list",
+    )
+    batch.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="number of runs per model",
+    )
+    batch.add_argument(
+        "--no-reset",
+        action="store_true",
+        help="do not revert to launch before and after each run",
+    )
+    batch.add_argument(
+        "--executable",
+        help="OpenCode executable path; defaults to opencode",
+    )
+    batch.add_argument(
+        "--agent-arg",
+        action="append",
+        default=[],
+        help="extra argument to pass to opencode run; repeat for multiple args",
+    )
+    batch.add_argument(
+        "--agent-timeout",
+        type=float,
+        help="max wall-clock seconds for each OpenCode process",
+    )
+    batch.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=15.0,
+        help="default max wall-clock seconds for each ksp_execute call",
+    )
+    batch.add_argument(
+        "--task-timeout",
+        type=float,
+        default=180.0,
+        help="default max wall-clock seconds for the background control task",
+    )
+    batch.add_argument(
+        "--max-sleep",
+        type=float,
+        default=240.0,
+        help="max seconds allowed for ksp_execute sleep/wait helpers",
+    )
+    batch.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="seconds between telemetry samples during sleep/wait helpers",
+    )
+    batch.add_argument(
+        "--telemetry-waypoint-interval",
+        type=float,
+        default=10.0,
+        help="mission seconds between downsampled telemetry waypoints",
+    )
+    batch.add_argument(
+        "--no-stream-agent",
+        action="store_true",
+        help="capture OpenCode output without streaming it live",
+    )
+    batch.set_defaults(func=_batch)
 
     score = subparsers.add_parser("score", help="score an existing run artifact directory")
     score.add_argument("run_dir")
@@ -149,13 +223,12 @@ def _run(args: argparse.Namespace) -> int:
     artifacts.copy_scenario(scenario)
     artifacts.write_run_config(
         agent,
-        tool_api_version="0.4.0",
-        execution_timeout_s=args.execution_timeout,
-        max_sleep_s=args.max_sleep,
+        tool_api_version="0.5.0",
+        python_timeout_s=args.execution_timeout,
+        task_timeout_s=args.task_timeout,
+        max_wait_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
         telemetry_waypoint_interval_s=args.telemetry_waypoint_interval,
-        warp_threshold_s=args.warp_threshold,
-        time_warp=not args.no_time_warp,
         agent_timeout_s=args.agent_timeout or scenario.timeout_s,
         opencode_permissions="deny_all_except_ksp_tools",
     )
@@ -185,18 +258,17 @@ def _run(args: argparse.Namespace) -> int:
         controller=controller,
         scenario=scenario,
         artifacts=artifacts,
-        execution_timeout_s=args.execution_timeout,
-        max_sleep_s=args.max_sleep,
+        python_timeout_s=args.execution_timeout,
+        task_timeout_s=args.task_timeout,
+        max_wait_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
-        warp_threshold_s=args.warp_threshold,
-        time_warp=not args.no_time_warp,
         live_events=True,
     )
     exit_code = 0
     result: ExternalAgentResult | None = None
 
     try:
-        tools.get_telemetry()
+        tools.observe()
         with ToolBridgeServer(tools) as bridge:
             artifacts.append_event({"type": "tool_bridge_started", "url": bridge.url})
             result = adapter.run(
@@ -247,19 +319,11 @@ def _run(args: argparse.Namespace) -> int:
             },
         )
 
-    if tools.termination_reason and tools.termination_reason.startswith("executeKRPC exceeded"):
-        artifacts.append_event(
-            {
-                "type": "telemetry_read_skipped",
-                "reason": "execute_krpc_timeout",
-            }
-        )
-    else:
-        try:
-            with tools.krpc_lock:
-                tools.record_telemetry(controller.read_telemetry())
-        except Exception as exc:
-            artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+    try:
+        with tools.krpc_lock:
+            tools.record_telemetry(controller.read_telemetry())
+    except Exception as exc:
+        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
 
     score = _finalize_run(
         artifacts=artifacts,
@@ -275,6 +339,78 @@ def _run(args: argparse.Namespace) -> int:
     print(f"Wrote run artifacts to {artifacts.run_dir}")
     print(f"success={score.success} score={score.score} failure_reason={score.failure_reason}")
     return exit_code
+
+
+def _batch(args: argparse.Namespace) -> int:
+    scenario = load_scenario(args.scenario)
+    models = _batch_models(args)
+    if args.repeat < 1:
+        raise ValueError("--repeat must be at least 1")
+    if not models:
+        raise ValueError("provide at least one --model or a --models-file with models = [...]")
+
+    runs: list[tuple[str, int, int]] = []
+    for model in models:
+        for repeat_index in range(1, args.repeat + 1):
+            runs.append((model, repeat_index, args.repeat))
+
+    exit_code = 0
+    for index, (model, repeat_index, repeat_count) in enumerate(runs, start=1):
+        print(
+            f"== Run {index}/{len(runs)} model={model} repeat={repeat_index}/{repeat_count} =="
+        )
+        if not args.no_reset and not _reset_launchpad(scenario):
+            return 2
+
+        run_args = argparse.Namespace(
+            scenario=args.scenario,
+            model=model,
+            executable=args.executable,
+            agent_arg=args.agent_arg,
+            run_id=default_run_id(_run_id_prefix(model, repeat_index)),
+            agent_timeout=args.agent_timeout,
+            execution_timeout=args.execution_timeout,
+            task_timeout=args.task_timeout,
+            max_sleep=args.max_sleep,
+            poll_interval=args.poll_interval,
+            telemetry_waypoint_interval=args.telemetry_waypoint_interval,
+            no_stream_agent=args.no_stream_agent,
+        )
+        exit_code = max(exit_code, _run(run_args))
+
+        if not args.no_reset and not _reset_launchpad(scenario):
+            return max(exit_code, 2)
+
+    return exit_code
+
+
+def _batch_models(args: argparse.Namespace) -> list[str]:
+    models = list(args.model)
+    if args.models_file:
+        with Path(args.models_file).open("rb") as handle:
+            data = tomllib.load(handle)
+        file_models = data.get("models")
+        if not isinstance(file_models, list) or not all(
+            isinstance(model, str) and model for model in file_models
+        ):
+            raise TypeError("--models-file must contain models = [\"provider/model\", ...]")
+        models.extend(file_models)
+    return models
+
+
+def _reset_launchpad(scenario: Scenario) -> bool:
+    try:
+        controller = KRPCController.connect(scenario)
+        controller.prepare_for_launchpad_run()
+    except Exception as exc:
+        print(f"Could not reset KSP to launchpad: {exc}")
+        return False
+    return True
+
+
+def _run_id_prefix(model: str, repeat_index: int) -> str:
+    safe_model = "".join(char if char.isalnum() else "_" for char in model).strip("_")
+    return f"opencode_live_{safe_model}_r{repeat_index}"
 
 
 def _finalize_run(

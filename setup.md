@@ -156,10 +156,16 @@ KSP-bench runs live missions through OpenCode. The harness starts a localhost
 tool bridge, generates a throwaway OpenCode workspace outside this repo, and
 exposes the bridge as custom OpenCode tools:
 
+- `ksp_observe`
+- `ksp_throttle`
+- `ksp_stage`
+- `ksp_pitch_heading`
+- `ksp_prograde`
+- `ksp_wait`
 - `ksp_execute`
-- `ksp_execute_async`
-- `ksp_check`
-- `ksp_kill`
+- `ksp_start_task`
+- `ksp_check_task`
+- `ksp_stop_task`
 
 The generated workspace also includes a read-only `krpc_reference/` directory.
 `opencode.json` denies all OpenCode tools by default, then allows `ksp_*` plus

@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from kspbench.cli import _score, build_parser
+from kspbench.cli import _batch, _score, build_parser
 
 
 def test_only_opencode_execution_command_is_registered() -> None:
@@ -17,6 +17,96 @@ def test_only_opencode_execution_command_is_registered() -> None:
         parser.parse_args(["live", "scenario.toml"])
     with pytest.raises(SystemExit):
         parser.parse_args(["live-external", "scenario.toml"])
+
+
+def test_run_command_exposes_simplified_timeout_flags() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "run",
+            "scenario.toml",
+            "--execution-timeout",
+            "5",
+            "--task-timeout",
+            "30",
+            "--max-sleep",
+            "60",
+        ]
+    )
+
+    assert args.execution_timeout == 5
+    assert args.task_timeout == 30
+    assert args.max_sleep == 60
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "scenario.toml", "--warp-threshold", "10"])
+
+
+def test_batch_command_accepts_repeated_models_and_model_file(tmp_path) -> None:
+    models_file = tmp_path / "models.toml"
+    models_file.write_text('models = ["openai/gpt-5.4", "anthropic/claude"]\n', encoding="utf-8")
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "batch",
+            "scenario.toml",
+            "--model",
+            "openai/gpt-5.3",
+            "--models-file",
+            str(models_file),
+            "--repeat",
+            "2",
+        ]
+    )
+
+    assert args.model == ["openai/gpt-5.3"]
+    assert args.models_file == str(models_file)
+    assert args.repeat == 2
+
+
+def test_batch_resets_around_each_run(monkeypatch) -> None:
+    calls = []
+
+    def fake_reset(_scenario):
+        calls.append("reset")
+        return True
+
+    def fake_run(args):
+        calls.append(("run", args.model, args.run_id))
+        return 0
+
+    monkeypatch.setattr("kspbench.cli._reset_launchpad", fake_reset)
+    monkeypatch.setattr("kspbench.cli._run", fake_run)
+
+    exit_code = _batch(
+        argparse.Namespace(
+            scenario="scenarios/kerbin_orbit_80km.toml",
+            model=["openai/gpt-5.3", "openai/gpt-5.4"],
+            models_file=None,
+            repeat=1,
+            no_reset=False,
+            executable=None,
+            agent_arg=[],
+            agent_timeout=None,
+            execution_timeout=15.0,
+            task_timeout=180.0,
+            max_sleep=240.0,
+            poll_interval=0.5,
+            telemetry_waypoint_interval=10.0,
+            no_stream_agent=False,
+        )
+    )
+
+    assert exit_code == 0
+    assert calls[0] == "reset"
+    assert calls[2] == "reset"
+    assert calls[3] == "reset"
+    assert calls[5] == "reset"
+    assert [call[1] for call in calls if isinstance(call, tuple)] == [
+        "openai/gpt-5.3",
+        "openai/gpt-5.4",
+    ]
 
 
 def test_score_handles_missing_telemetry_csv(tmp_path) -> None:

@@ -4,7 +4,8 @@ KSP-bench is a small benchmark harness for testing whether agents can fly a fixe
 
 The repo is intentionally split into a few durable parts:
 
-- `src/kspbench/`: harness code, scoring, telemetry, live kRPC tools, and the OpenCode agent adapter.
+- `src/kspbench/`: scenario loading, scoring, telemetry, live flight session tools, artifacts,
+  and the OpenCode agent adapter.
 - `scenarios/`: benchmark scenario definitions.
 - `env/ckan/`: reproducible KSP mod environment metadata.
 - `tests/`: fast unit tests that do not require KSP.
@@ -49,6 +50,24 @@ Run OpenCode against KSP through locked-down custom tools:
 uv run kspbench run scenarios/kerbin_orbit_80km.toml \
   --model openai/gpt-5.4
 ```
+
+Queue multiple OpenCode models, reverting KSP to the unpaused launchpad state before
+and after each attempt:
+
+```bash
+uv run kspbench batch scenarios/kerbin_orbit_80km.toml \
+  --model openai/gpt-5.4 \
+  --model opencode/deepseek-v4-flash-free
+```
+
+The live harness exposes a deliberately small tool surface to the agent:
+
+- Structured flight tools for observing, throttle, staging, pitch/heading, prograde hold, and wait.
+- A direct Python escape hatch for kRPC calls that the structured tools do not cover.
+- One background Python control task at a time for longer closed-loop burns or guards.
+
+This keeps the benchmark centered on the simple question: can the model fly the vessel to orbit,
+while the harness records enough telemetry, actions, and artifacts to compare runs.
 
 Score or summarize existing run artifacts:
 
