@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,8 +16,8 @@ from urllib.parse import urlparse
 from kspbench.config import Scenario
 from kspbench.live import LiveKRPCTools
 
-AGENT_PROMPT_TEMPLATE = """You are in charge of flying the Kerbal X rocket in KSP in realtime. it is
-a multistage rocket with more than enough fuel, with the right pilot. (hint: it uses onion staging)
+AGENT_PROMPT_TEMPLATE = """You are in charge of flying the Kerbal X rocket in KSP in realtime.
+It is a multistage rocket with enough fuel if it is staged and flown well.
 
 The goal:
 - Reach a stable orbit around {body}.
@@ -24,35 +25,23 @@ The goal:
 - Target periapsis at least {periapsis_min_m:.0f}m.
 - Complete within {timeout_s:.0f}s mission elapsed time.
 
-To accomplish this, you can use the following tools:
-- read/grep/glob: inspect the read-only krpc_reference/ files for kRPC Python API names and
-  benchmark helper names, telemetry fields, examples, and kRPC API names before using unfamiliar
-  vessel, autopilot, orbit, flight, or staging calls.
-- ksp_execute: run Python code with kRPC. This is your main interface: read telemetry, inspect the
-  vessel, stage, steer, throttle, and run short control loops from inside this tool.
-- ksp_execute_async: start a background kRPC Python script and immediately get a script id.
-- ksp_check: check background script status, recent stdout, result, errors, and latest telemetry.
-- ksp_kill: request cooperative stop for a background script.
+Prefer the structured KSP tools:
+- ksp_observe: read telemetry, vehicle resources, staging, engines, and the target orbit.
+- ksp_throttle: set throttle from 0.0 to 1.0.
+- ksp_stage: activate the next stage.
+- ksp_pitch_heading: engage autopilot and target pitch/heading.
+- ksp_prograde: hold prograde in an orbital, surface, or vessel-surface frame.
+- ksp_wait: wait briefly while the harness samples telemetry.
 
-KSP is running in real wall-clock time. If you run a synchronous ksp_execute script that takes a
-while, the rocket keeps flying while you wait and you cannot issue another command until it returns.
-Use ksp_execute for quick observations and short actions. Use ksp_execute_async for longer control
-loops, threshold guards such as cutting throttle at an apoapsis target, or monitor scripts you want
-running while you keep thinking. Multiple async scripts are allowed, but control scripts can fight
-each other because throttle, staging, and autopilot are shared; coordinate them deliberately.
+Use ksp_execute only as an escape hatch for direct kRPC Python or short custom loops.
+Use ksp_start_task for one longer background control loop, then ksp_check_task and
+ksp_stop_task to manage it. Only one task can run at a time so controls do not fight.
 
-The ksp_execute and ksp_execute_async code runs inside the harness with these names available:
-- conn, space_center, vessel
-- getTelemetry(), getVehicleState(), getOrbitState()
-- sleep(seconds), wait(seconds), wait_until(condition, timeout_s=seconds).
-  Long waits are rejected in atmosphere; use small closed-loop sleeps there.
-- In async scripts only, should_stop() returns True after ksp_kill requests cooperative stop.
-- math is already available; any other imports are not allowed.
-
-It is fine to write longer Python snippets that perform several related actions.
-Start by reading or grepping krpc_reference/. Before using an unfamiliar kRPC API, grep
-krpc_reference/ for it. Prefer the documented target_pitch_and_heading and reference-frame
-direction APIs over guessed autopilot properties.
+KSP keeps flying in real wall-clock time while you think and while tools run. In atmosphere,
+long waits are rejected; use short observe/control/wait cycles. Before using unfamiliar direct
+kRPC APIs, inspect krpc_reference/ with read/grep/glob. Python snippets have conn, space_center,
+vessel, observe(), getTelemetry(), getVehicleState(), sleep()/wait(), math, and in background
+tasks should_stop().
 """
 
 AGENT_SYSTEM_PROMPT = "\n".join(
@@ -63,30 +52,27 @@ AGENT_SYSTEM_PROMPT = "\n".join(
         ),
         "",
         (
-            "Use only the custom tools named ksp_execute, ksp_execute_async, ksp_check, "
-            "and ksp_kill, plus read/grep/glob for the local krpc_reference/ directory. "
-            "Do not use shell commands, edit files, browse the web, ask the user "
-            "questions, or call non-benchmark tools."
+            "Use only the custom tools named ksp_observe, ksp_throttle, ksp_stage, "
+            "ksp_pitch_heading, ksp_prograde, ksp_wait, ksp_execute, ksp_start_task, "
+            "ksp_check_task, and ksp_stop_task, plus read/grep/glob for the local "
+            "krpc_reference/ directory. Do not use shell commands, edit files, browse "
+            "the web, ask the user questions, or call non-benchmark tools."
         ),
         "",
         (
-            "Use read/grep/glob on krpc_reference/ for the reference. Use ksp_execute "
-            "for quick KSP interaction and ksp_execute_async for longer background "
-            "control loops. Check krpc_reference/ before trying unfamiliar kRPC APIs. "
-            "Inside snippets, use getTelemetry() and getVehicleState() to observe the "
-            "rocket, including current_stage_resources for current-stage fuel. KSP "
-            "continues in real wall-clock time while synchronous ksp_execute is running. "
-            "Long sleeps are rejected in atmosphere because they miss critical flight "
-            "events."
+            "Prefer structured flight tools over Python. Use ksp_execute only for direct "
+            "kRPC calls that the structured tools do not cover, and ksp_start_task for "
+            "one longer background control loop. Check krpc_reference/ before trying "
+            "unfamiliar kRPC APIs. Long waits are rejected in atmosphere because they "
+            "miss critical flight events."
         ),
     ]
 )
 
 KRPC_REFERENCE_README = """# kRPC reference for KSP-bench
 
-These files are here so you can use read/grep/glob instead of a docs tool or guessed
-kRPC API names. The executable snippets still run only through ksp_execute or
-ksp_execute_async.
+These files are here so you can use read/grep/glob instead of guessed kRPC API names.
+Prefer structured KSP tools; use Python snippets only through ksp_execute or ksp_start_task.
 
 Useful searches:
 
@@ -98,21 +84,23 @@ Useful searches:
 
 Benchmark tools:
 
-- `ksp_execute`: run sandboxed kRPC Python synchronously. Use it for quick observations,
-  staging, steering, throttle changes, and short control loops.
-- `ksp_execute_async`: start sandboxed kRPC Python in the background and immediately get
-  a script id. Use it for longer control loops, threshold guards, and monitors.
-- `ksp_check`: check one async script by script_id, or list all async scripts. It also returns
-  latest telemetry recorded by the harness, so use it to monitor async scripts without blocking
-  behind a running control loop.
-- `ksp_kill`: request cooperative stop for an async script.
+- `ksp_observe`: read telemetry, vehicle state, and target orbit.
+- `ksp_throttle`: set throttle.
+- `ksp_stage`: activate next stage.
+- `ksp_pitch_heading`: engage autopilot and target pitch/heading.
+- `ksp_prograde`: hold prograde.
+- `ksp_wait`: wait briefly while telemetry is sampled.
+- `ksp_execute`: direct kRPC Python escape hatch.
+- `ksp_start_task`: start one background Python control loop.
+- `ksp_check_task`: check that task and latest telemetry.
+- `ksp_stop_task`: request cooperative stop.
 
 Snippet globals:
 
 - `conn`, `space_center`, `vessel`
-- `getTelemetry()`, `getVehicleState()`, `getOrbitState()`
-- `sleep(seconds)`, `wait(seconds)`, `wait_until(condition, timeout_s=seconds)`
-- async scripts also get `should_stop()`
+- `observe()`, `getTelemetry()`, `getVehicleState()`
+- `sleep(seconds)`, `wait(seconds)`
+- background tasks also get `should_stop()`
 - `math` is already available; other imports are blocked
 
 Telemetry fields returned by `getTelemetry()`:
@@ -122,8 +110,6 @@ Telemetry fields returned by `getTelemetry()`:
 `surface_speed_m_s`, `orbital_speed_m_s`, `vertical_speed_m_s`, `pitch_deg`,
 `heading_deg`, `roll_deg`, `stage`, `liquid_fuel`, `oxidizer`, `solid_fuel`,
 `dynamic_pressure_pa`, `situation`, `body`, `controllable`, `intact`.
-
-`getOrbitState()` returns a compact orbit/control snapshot for timing coast and burns.
 
 `getVehicleState()` includes total resources, current-stage resources, stages, engines,
 active engines, decouplers, and atmospheric status. Use `current_stage_resources` to
@@ -168,9 +154,8 @@ Flight notes:
   targets.
 - Use `orbital_speed_m_s` for orbital checks; `surface_speed_m_s` can be misleading in
   some reference frames.
-- If a synchronous `ksp_execute` monitor times out, treat it as a failed action and
-  switch to short `ksp_execute` calls or async control. The vessel may still be
-  controllable.
+- If a `ksp_execute` monitor times out, treat it as a failed action and switch to
+  structured tools or a single background task. The vessel may still be controllable.
 """
 
 KRPC_SPACE_CENTER_STUBS = '''"""Searchable kRPC SpaceCenter declarations for KSP-bench agents.
@@ -381,6 +366,61 @@ def write_krpc_reference(workspace: Path) -> None:
         KRPC_SPACE_CENTER_STUBS,
         encoding="utf-8",
     )
+    _write_installed_krpc_reference(reference_dir)
+
+
+def _write_installed_krpc_reference(reference_dir: Path) -> None:
+    """Snapshot installed kRPC Python bindings for agent search, when available."""
+    try:
+        import krpc  # type: ignore
+    except Exception:
+        return
+
+    package_root = Path(krpc.__file__).resolve().parent
+    source_root = reference_dir / "python_client"
+    copied: list[Path] = []
+    for source in sorted(package_root.rglob("*")):
+        if not source.is_file() or source.suffix not in {".py", ".pyi", ".typed"}:
+            continue
+        if "__pycache__" in source.parts or "test" in source.relative_to(package_root).parts:
+            continue
+        target = source_root / source.relative_to(package_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        copied.append(target)
+
+    if not copied:
+        return
+
+    services = sorted((source_root / "services").glob("*.py"))
+    index_lines = [
+        "# Installed kRPC Python client source snapshot",
+        "",
+        "This directory is copied from the installed `krpc` Python package for this run.",
+        "Search it when you need exact generated service APIs instead of guessing names.",
+        "",
+        "Useful files:",
+        "- `python_client/services/spacecenter.py`: generated SpaceCenter service classes.",
+        "- `python_client/client.py`: connection/client implementation.",
+        "- `python_client/service.py`: generated-service helper base classes.",
+        "",
+        "Useful searches:",
+        "- `grep -n \"class Vessel\" krpc_reference/python_client/services/spacecenter.py`",
+        "- `grep -n \"target_pitch_and_heading\" "
+        "krpc_reference/python_client/services/spacecenter.py`",
+        "- `grep -n \"reference_frame\" krpc_reference/python_client/services/spacecenter.py`",
+        "- `grep -n \"resources_in_decouple_stage\" "
+        "krpc_reference/python_client/services/spacecenter.py`",
+        "",
+        f"Copied files: {len(copied)}",
+    ]
+    if services:
+        index_lines.extend(["", "Generated services:"])
+        index_lines.extend(f"- `{path.relative_to(reference_dir)}`" for path in services)
+    (reference_dir / "PYTHON_CLIENT_SOURCE.md").write_text(
+        "\n".join(index_lines) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _opencode_config(model: str | None) -> dict[str, Any]:
@@ -438,14 +478,74 @@ async function post(path: string, payload: unknown): Promise<string> {{
   }})
 }}
 
+export const observe = tool({{
+  description:
+    "Read the current telemetry, vehicle state, staging/resources/engines, and target orbit.",
+  args: {{}},
+  async execute() {{
+    return post("/observe", {{}})
+  }},
+}})
+
+export const throttle = tool({{
+  description: "Set vessel throttle from 0.0 to 1.0.",
+  args: {{
+    value: tool.schema.number().describe("Throttle setting, clamped to 0.0 through 1.0."),
+  }},
+  async execute(args) {{
+    return post("/throttle", args)
+  }},
+}})
+
+export const stage = tool({{
+  description: "Activate the next stage.",
+  args: {{}},
+  async execute() {{
+    return post("/stage", {{}})
+  }},
+}})
+
+export const pitch_heading = tool({{
+  description: "Engage autopilot and target a pitch and compass heading in degrees.",
+  args: {{
+    pitch: tool.schema.number().describe("Pitch in degrees."),
+    heading: tool.schema.number().describe("Heading in degrees, usually 90 for east."),
+  }},
+  async execute(args) {{
+    return post("/pitch_heading", args)
+  }},
+}})
+
+export const prograde = tool({{
+  description: "Engage autopilot and hold prograde.",
+  args: {{
+    reference_frame: tool.schema.string().optional().describe(
+      "Reference frame: orbital, surface, or vessel_surface. Defaults to orbital.",
+    ),
+  }},
+  async execute(args) {{
+    return post("/prograde", args)
+  }},
+}})
+
+export const wait = tool({{
+  description:
+    "Wait while the harness samples telemetry. In atmosphere, long waits are rejected.",
+  args: {{
+    seconds: tool.schema.number().describe("Seconds to wait."),
+  }},
+  async execute(args) {{
+    return post("/wait", args)
+  }},
+}})
+
 export const execute = tool({{
   description:
-    "Run sandboxed kRPC Python synchronously. KSP keeps flying in real wall-clock " +
-    "time while this blocks; use for quick telemetry, staging, steering, and short loops.",
+    "Escape hatch: run direct kRPC Python for APIs the structured tools do not cover.",
   args: {{
     code: tool.schema.string().describe(
-      "Python code using conn, space_center, vessel, getTelemetry(), " +
-      "getVehicleState(), getOrbitState(), math, and short wait helpers.",
+      "Python code using conn, space_center, vessel, observe(), getTelemetry(), " +
+      "getVehicleState(), math, and short wait helpers.",
     ),
     timeout_s: tool.schema.number().optional().describe(
       "Optional wall-clock timeout in seconds.",
@@ -456,46 +556,38 @@ export const execute = tool({{
   }},
 }})
 
-export const execute_async = tool({{
+export const start_task = tool({{
   description:
-    "Start sandboxed kRPC Python in the background and immediately return a script id. " +
-    "Use for longer control loops, guards, and monitors while you keep reasoning. " +
-    "Multiple scripts may run and can fight over shared controls, so coordinate them.",
+    "Start one background kRPC Python control loop and immediately return. Stop it before " +
+    "starting another task.",
   args: {{
     code: tool.schema.string().describe(
-      "Python code using conn, space_center, vessel, getTelemetry(), " +
-      "getVehicleState(), getOrbitState(), math, short wait helpers, and should_stop().",
+      "Python code using conn, space_center, vessel, observe(), getTelemetry(), " +
+      "getVehicleState(), math, short wait helpers, and should_stop().",
     ),
     timeout_s: tool.schema.number().optional().describe(
       "Optional wall-clock timeout in seconds.",
     ),
   }},
   async execute(args) {{
-    return post("/execute_async", args)
+    return post("/start_task", args)
   }},
 }})
 
-export const check = tool({{
+export const check_task = tool({{
   description:
-    "Check async script status. Omit script_id to list all scripts. Returns status, " +
-    "elapsed time, recent stdout, result, latest telemetry, and any error.",
-  args: {{
-    script_id: tool.schema.string().optional().describe("Async script id to inspect."),
-  }},
-  async execute(args) {{
-    return post("/check", args)
+    "Check background task status, recent stdout, result, errors, and latest telemetry.",
+  args: {{}},
+  async execute() {{
+    return post("/check_task", {{}})
   }},
 }})
 
-export const kill = tool({{
-  description:
-    "Request cooperative stop for an async script. Scripts using sleep/wait/should_stop " +
-    "stop promptly; a blocking kRPC call may only stop at timeout.",
-  args: {{
-    script_id: tool.schema.string().describe("Async script id to stop."),
-  }},
-  async execute(args) {{
-    return post("/kill", args)
+export const stop_task = tool({{
+  description: "Request cooperative stop for the background task.",
+  args: {{}},
+  async execute() {{
+    return post("/stop_task", {{}})
   }},
 }})
 """
@@ -536,12 +628,24 @@ class ToolBridgeServer:
 
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
-                if path not in {"/execute", "/execute_async", "/check", "/kill"}:
+                routes = {
+                    "/observe",
+                    "/throttle",
+                    "/stage",
+                    "/pitch_heading",
+                    "/prograde",
+                    "/wait",
+                    "/execute",
+                    "/start_task",
+                    "/check_task",
+                    "/stop_task",
+                }
+                if path not in routes:
                     self._send_json({"error": "not found"}, status=404)
                     return
                 try:
                     payload = self._read_json()
-                    if path in {"/execute", "/execute_async"}:
+                    if path in {"/execute", "/start_task"}:
                         code = payload.get("code")
                         if not isinstance(code, str):
                             raise TypeError("code must be a string")
@@ -554,34 +658,67 @@ class ToolBridgeServer:
                 except Exception as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=400)
                     return
-                if path == "/execute":
-                    self._send_json(
-                        tools.executeKRPC(code, timeout_s=float(timeout) if timeout else None)
-                    )
+                if path == "/observe":
+                    self._send_json(tools.observe())
                     return
-                if path == "/execute_async":
-                    self._send_json(
-                        tools.executeKRPCAsync(code, timeout_s=float(timeout) if timeout else None)
-                    )
-                    return
-                if path == "/check":
-                    script_id = payload.get("script_id")
-                    if script_id is not None and not isinstance(script_id, str):
+                if path == "/throttle":
+                    value = payload.get("value")
+                    if not isinstance(value, int | float):
                         self._send_json(
-                            {"ok": False, "error": "script_id must be a string"},
+                            {"ok": False, "error": "value must be a number"},
                             status=400,
                         )
                         return
-                    self._send_json(tools.checkAsync(script_id))
+                    self._send_json(tools.set_throttle(float(value)))
                     return
-                script_id = payload.get("script_id")
-                if not isinstance(script_id, str):
+                if path == "/stage":
+                    self._send_json(tools.stage())
+                    return
+                if path == "/pitch_heading":
+                    pitch = payload.get("pitch")
+                    heading = payload.get("heading")
+                    if not isinstance(pitch, int | float) or not isinstance(heading, int | float):
+                        self._send_json(
+                            {"ok": False, "error": "pitch and heading must be numbers"},
+                            status=400,
+                        )
+                        return
+                    self._send_json(tools.set_pitch_heading(float(pitch), float(heading)))
+                    return
+                if path == "/prograde":
+                    reference_frame = payload.get("reference_frame", "orbital")
+                    if not isinstance(reference_frame, str):
+                        self._send_json(
+                            {"ok": False, "error": "reference_frame must be a string"},
+                            status=400,
+                        )
+                        return
+                    self._send_json(tools.hold_prograde(reference_frame))
+                    return
+                if path == "/wait":
+                    seconds = payload.get("seconds")
+                    if not isinstance(seconds, int | float):
+                        self._send_json(
+                            {"ok": False, "error": "seconds must be a number"},
+                            status=400,
+                        )
+                        return
+                    self._send_json(tools.wait(float(seconds)))
+                    return
+                if path == "/execute":
                     self._send_json(
-                        {"ok": False, "error": "script_id must be a string"},
-                        status=400,
+                        tools.execute_python(code, timeout_s=float(timeout) if timeout else None)
                     )
                     return
-                self._send_json(tools.killAsync(script_id))
+                if path == "/start_task":
+                    self._send_json(
+                        tools.start_task(code, timeout_s=float(timeout) if timeout else None)
+                    )
+                    return
+                if path == "/check_task":
+                    self._send_json(tools.check_task())
+                    return
+                self._send_json(tools.stop_task())
 
             def log_message(self, _format: str, *_args: object) -> None:
                 return
@@ -679,13 +816,17 @@ def _format_opencode_terminal_line(line: str) -> str:
     clean = clean.removeprefix("> ").strip()
     if not clean:
         return ""
-    match = re.fullmatch(r"⚙\s+(ksp_(?:execute_async|execute|check|kill))(?:\s+(.*))?", clean)
+    match = re.fullmatch(
+        r"⚙\s+(ksp_(?:observe|throttle|stage|pitch_heading|prograde|wait|execute|"
+        r"start_task|check_task|stop_task))(?:\s+(.*))?",
+        clean,
+    )
     if not match:
         return line
 
     tool = match.group(1)
     payload = (match.group(2) or "").strip()
-    if tool in {"ksp_check", "ksp_kill"}:
+    if tool in {"ksp_observe", "ksp_stage", "ksp_check_task", "ksp_stop_task"}:
         return f"[agent] {tool}{(' ' + payload) if payload else ''}{line_end}"
 
     if not payload:

@@ -117,7 +117,8 @@ def test_opencode_workspace_denies_builtin_tools(tmp_path) -> None:
 
     config = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
     tool_source = (tmp_path / ".opencode" / "tools" / "ksp.ts").read_text(encoding="utf-8")
-    reference = (tmp_path / "krpc_reference" / "space_center_stubs.py").read_text(
+    reference_dir = tmp_path / "krpc_reference"
+    reference = (reference_dir / "space_center_stubs.py").read_text(
         encoding="utf-8"
     )
 
@@ -134,18 +135,29 @@ def test_opencode_workspace_denies_builtin_tools(tmp_path) -> None:
     assert config["agent"]["kspbench"]["prompt"]
     assert "http://127.0.0.1:1234" in tool_source
     assert "export const help" not in tool_source
+    assert "export const observe" in tool_source
+    assert "export const throttle" in tool_source
+    assert "export const stage" in tool_source
+    assert "export const pitch_heading" in tool_source
+    assert "export const prograde" in tool_source
+    assert "export const wait" in tool_source
     assert "export const execute" in tool_source
-    assert "export const execute_async" in tool_source
-    assert "export const check" in tool_source
-    assert "export const kill" in tool_source
+    assert "export const start_task" in tool_source
+    assert "export const check_task" in tool_source
+    assert "export const stop_task" in tool_source
+    assert "export const execute_async" not in tool_source
     assert "export const telemetry" not in tool_source
     assert "export const vehicle" not in tool_source
-    assert "export const wait" not in tool_source
     assert "target_pitch_and_heading" in reference
     assert "target_prograde" not in reference
-    assert "getTelemetry()" in (tmp_path / "krpc_reference" / "README.md").read_text(
-        encoding="utf-8"
-    )
+    assert "getTelemetry()" in (reference_dir / "README.md").read_text(encoding="utf-8")
+    source_index = reference_dir / "PYTHON_CLIENT_SOURCE.md"
+    if source_index.exists():
+        source_text = source_index.read_text(encoding="utf-8")
+        spacecenter_source = reference_dir / "python_client" / "services" / "spacecenter.py"
+        assert "python_client/services/spacecenter.py" in source_text
+        assert spacecenter_source.exists()
+        assert "class Vessel" in spacecenter_source.read_text(encoding="utf-8")
 
 
 def test_prompt_names_custom_tools_not_raw_http() -> None:
@@ -154,15 +166,21 @@ def test_prompt_names_custom_tools_not_raw_http() -> None:
     prompt = build_agent_prompt(scenario=scenario)
 
     assert "ksp_help" not in prompt
+    assert "ksp_observe" in prompt
+    assert "ksp_throttle" in prompt
+    assert "ksp_stage" in prompt
+    assert "ksp_pitch_heading" in prompt
+    assert "ksp_prograde" in prompt
+    assert "ksp_wait" in prompt
     assert "ksp_execute" in prompt
-    assert "ksp_execute_async" in prompt
-    assert "ksp_check" in prompt
-    assert "ksp_kill" in prompt
+    assert "ksp_start_task" in prompt
+    assert "ksp_check_task" in prompt
+    assert "ksp_stop_task" in prompt
+    assert "ksp_execute_async" not in prompt
     assert "krpc_reference/" in prompt
     assert "real wall-clock time" in prompt
     assert "ksp_docs" not in prompt
     assert "ksp_telemetry" not in prompt
-    assert "ksp_wait" not in prompt
     assert "getDocs" not in prompt
     assert "curl" not in prompt
     assert "vessel" in prompt
@@ -176,32 +194,39 @@ def test_tool_bridge_exposes_ksp_tools(tmp_path) -> None:
     )
 
     with ToolBridgeServer(tools) as bridge:
+        observe = _post_json(f"{bridge.url}/observe", {})
+        throttle = _post_json(f"{bridge.url}/throttle", {"value": 0.7})
         execute = _post_json(
             f"{bridge.url}/execute",
             {
                 "code": (
-                    "vessel.control.throttle = 0.7\n"
                     "result = {'throttle': vessel.control.throttle, "
                     "'body': getTelemetry()['body']}"
                 )
             },
         )
-        async_started = _post_json(
-            f"{bridge.url}/execute_async",
+        syntax_error = _post_json(f"{bridge.url}/execute", {"code": "if True print('bad')"})
+        task_started = _post_json(
+            f"{bridge.url}/start_task",
             {"code": "result = {'ok': True}"},
         )
-        script_id = async_started["script_id"]
-        check = _post_json(f"{bridge.url}/check", {"script_id": script_id})
-        kill = _post_json(f"{bridge.url}/kill", {"script_id": script_id})
+        check = _post_json(f"{bridge.url}/check_task", {})
+        stop = _post_json(f"{bridge.url}/stop_task", {})
 
+    assert observe["ok"] is True
+    assert throttle["ok"] is True
     assert execute["ok"] is True
     assert execute["result"] == {"throttle": 0.7, "body": "Kerbin"}
-    assert async_started["ok"] is True
+    assert syntax_error["ok"] is False
+    assert syntax_error["error_type"] == "FlightToolError"
+    assert "invalid syntax" in syntax_error["error"]
+    assert task_started["ok"] is True
     assert check["ok"] is True
-    assert "script" in check
-    assert kill["ok"] is True
-    assert tools.actions[0]["type"] == "execute_krpc"
-    assert tools.actions[1]["type"] == "execute_krpc_async"
+    assert "task" in check
+    assert stop["ok"] is True
+    assert tools.actions[0]["type"] == "observe"
+    assert tools.actions[1]["type"] == "set_throttle"
+    assert "execute_python" in [action["type"] for action in tools.actions]
 
 
 def test_extract_usage_parses_common_opencode_text() -> None:
