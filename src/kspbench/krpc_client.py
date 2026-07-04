@@ -101,11 +101,30 @@ class KRPCController:
         vessel = self.vessel
         control = vessel.control
         current_stage = _safe_int(lambda: control.current_stage, default=0)
+        orbit = vessel.orbit
+        body = orbit.body
+        surface_flight = vessel.flight(vessel.surface_reference_frame)
         resources = vessel.resources
         resource_names = ("LiquidFuel", "Oxidizer", "SolidFuel", "ElectricCharge", "MonoPropellant")
 
+        stages = _stage_resources(vessel, current_stage, resource_names)
+
         return {
             "name": _safe_value(lambda: vessel.name, default="unknown"),
+            "body": _safe_value(lambda: body.name, default="unknown"),
+            "situation": _enum_name(_safe_value(lambda: vessel.situation, default="unknown")),
+            "altitude_m": _safe_float(lambda: vessel.flight(body.reference_frame).mean_altitude),
+            "surface_altitude_m": _safe_float(lambda: surface_flight.surface_altitude),
+            "apoapsis_m": _safe_float(lambda: orbit.apoapsis_altitude),
+            "periapsis_m": _safe_float(lambda: orbit.periapsis_altitude),
+            "orbital_speed_m_s": _safe_float(lambda: orbit.speed),
+            "vertical_speed_m_s": _safe_float(lambda: surface_flight.vertical_speed),
+            "dynamic_pressure_pa": _safe_float(
+                lambda: getattr(surface_flight, "dynamic_pressure", 0.0)
+            ),
+            "atmosphere_depth_m": _safe_float(lambda: body.atmosphere_depth),
+            "in_atmosphere": _safe_float(lambda: vessel.flight(body.reference_frame).mean_altitude)
+            < _safe_float(lambda: body.atmosphere_depth),
             "current_stage": current_stage,
             "next_stage_available": current_stage > 0,
             "throttle": _safe_float(lambda: control.throttle),
@@ -120,8 +139,11 @@ class KRPCController:
                 resource_name: _resource_amount(resources, resource_name)
                 for resource_name in resource_names
             },
-            "stages": _stage_resources(vessel, current_stage, resource_names),
+            "current_stage_resources": _current_stage_resources(stages, current_stage),
+            "stages": stages,
             "active_engines": _active_engines(vessel),
+            "engines": _engines(vessel),
+            "decouplers": _decouplers(vessel),
         }
 
 
@@ -167,6 +189,18 @@ def _stage_resources(
     return stages
 
 
+def _current_stage_resources(
+    stages: list[dict[str, Any]],
+    current_stage: int,
+) -> dict[str, float]:
+    for stage in stages:
+        if stage["stage"] == current_stage:
+            resources = stage.get("resources", {})
+            if isinstance(resources, dict):
+                return {str(name): float(amount) for name, amount in resources.items()}
+    return {}
+
+
 def _active_engines(vessel: Any) -> list[dict[str, Any]]:
     engines: list[dict[str, Any]] = []
     try:
@@ -190,6 +224,57 @@ def _active_engines(vessel: Any) -> list[dict[str, Any]]:
             }
         )
     return engines
+
+
+def _engines(vessel: Any) -> list[dict[str, Any]]:
+    engines: list[dict[str, Any]] = []
+    try:
+        engine_parts = vessel.parts.engines
+    except Exception:
+        return engines
+
+    for index, engine in enumerate(engine_parts):
+        engines.append(
+            {
+                "index": index,
+                "part_name": _safe_value(lambda engine=engine: engine.part.name, default="unknown"),
+                "stage": _safe_int(lambda engine=engine: engine.part.stage, default=-1),
+                "decouple_stage": _safe_int(
+                    lambda engine=engine: engine.part.decouple_stage,
+                    default=-1,
+                ),
+                "active": _safe_bool(lambda engine=engine: engine.active),
+                "has_fuel": _safe_bool(lambda engine=engine: engine.has_fuel),
+                "thrust": _safe_float(lambda engine=engine: engine.thrust),
+                "max_thrust": _safe_float(lambda engine=engine: engine.max_thrust),
+            }
+        )
+    return engines
+
+
+def _decouplers(vessel: Any) -> list[dict[str, Any]]:
+    decouplers: list[dict[str, Any]] = []
+    try:
+        decoupler_parts = vessel.parts.with_module("ModuleDecouple")
+        decoupler_parts += vessel.parts.with_module("ModuleAnchoredDecoupler")
+    except Exception:
+        return decouplers
+
+    seen: set[int] = set()
+    for index, part in enumerate(decoupler_parts):
+        marker = id(part)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        decouplers.append(
+            {
+                "index": index,
+                "part_name": _safe_value(lambda part=part: part.name, default="unknown"),
+                "stage": _safe_int(lambda part=part: part.stage, default=-1),
+                "decouple_stage": _safe_int(lambda part=part: part.decouple_stage, default=-1),
+            }
+        )
+    return decouplers
 
 
 def _safe_value(getter: Any, *, default: Any) -> Any:
