@@ -144,6 +144,8 @@ runs/<run_id>/
   scenario.toml
   action_log.jsonl
   telemetry.csv
+  telemetry_waypoints.json
+  agent_process.json
   score.json
   summary.txt
 ```
@@ -154,16 +156,19 @@ KSP-bench runs live missions through OpenCode. The harness starts a localhost
 tool bridge, generates a throwaway OpenCode workspace outside this repo, and
 exposes the bridge as custom OpenCode tools:
 
-- `ksp_telemetry`
-- `ksp_vehicle`
 - `ksp_execute`
-- `ksp_wait`
+- `ksp_execute_async`
+- `ksp_check`
+- `ksp_kill`
 
-The generated `opencode.json` denies all OpenCode tools by default and allows
-only `ksp_*`, so the model does not get shell, file editing, repo reads, web
-fetching, or direct access to this workspace. The harness still records actions,
-telemetry, score, and an `agent_process.json` file with the command, stdout,
-stderr, return code, and timeout status.
+The generated workspace also includes a read-only `krpc_reference/` directory.
+`opencode.json` denies all OpenCode tools by default, then allows `ksp_*` plus
+`read`, `grep`, and `glob` so the model can inspect that generated interface
+reference without shell, file editing, web fetching, or direct access to this
+workspace. The harness still records actions, full telemetry, 10-second telemetry
+waypoints, score, and an
+`agent_process.json` file with the command, stdout, stderr, return code, timeout
+status, and best-effort token/cost usage fields.
 
 ```bash
 uv run kspbench run scenarios/kerbin_orbit_80km.toml \
@@ -171,7 +176,7 @@ uv run kspbench run scenarios/kerbin_orbit_80km.toml \
 ```
 
 OpenCode is invoked with `opencode run --dir <throwaway-workspace> --agent
-kspbench --auto`. Pass additional CLI flags with repeated `--agent-arg`, for
+kspbench`. Pass additional CLI flags with repeated `--agent-arg`, for
 example:
 
 ```bash
