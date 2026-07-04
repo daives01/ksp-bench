@@ -95,6 +95,10 @@ class KRPCController:
             body=str(body.name),
             controllable=_is_controllable(vessel),
             intact=True,
+            time_to_apoapsis_s=_safe_float(lambda: orbit.time_to_apoapsis),
+            time_to_periapsis_s=_safe_float(lambda: orbit.time_to_periapsis),
+            eccentricity=_safe_float(lambda: orbit.eccentricity),
+            inclination_deg=_safe_float(lambda: orbit.inclination),
         )
 
     def read_vehicle_state(self) -> dict[str, Any]:
@@ -117,6 +121,10 @@ class KRPCController:
             "surface_altitude_m": _safe_float(lambda: surface_flight.surface_altitude),
             "apoapsis_m": _safe_float(lambda: orbit.apoapsis_altitude),
             "periapsis_m": _safe_float(lambda: orbit.periapsis_altitude),
+            "time_to_apoapsis_s": _safe_float(lambda: orbit.time_to_apoapsis),
+            "time_to_periapsis_s": _safe_float(lambda: orbit.time_to_periapsis),
+            "eccentricity": _safe_float(lambda: orbit.eccentricity),
+            "inclination_deg": _safe_float(lambda: orbit.inclination),
             "orbital_speed_m_s": _safe_float(lambda: orbit.speed),
             "vertical_speed_m_s": _safe_float(lambda: surface_flight.vertical_speed),
             "dynamic_pressure_pa": _safe_float(

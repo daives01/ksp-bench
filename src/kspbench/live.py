@@ -42,6 +42,7 @@ class AsyncScript:
     started_monotonic: float
     status: str = "running"
     stdout: str = ""
+    lock_wait_s: float = 0.0
     result: Any = None
     error_type: str | None = None
     error: str | None = None
@@ -91,6 +92,7 @@ class LiveKRPCTools:
         self._async_lock = threading.Lock()
         self._krpc_lock = threading.RLock()
         self._next_async_script_id = 1
+        self._orbit_diverged = False
 
     def getTelemetry(self) -> dict[str, Any]:
         return self.get_telemetry()
@@ -123,6 +125,35 @@ class LiveKRPCTools:
                 }
             )
             return state
+
+    def getOrbitState(self) -> dict[str, Any]:
+        return self.get_orbit_state()
+
+    def get_orbit_state(self) -> dict[str, Any]:
+        with self._krpc_lock:
+            sample = self.controller.read_telemetry()
+            self.record_telemetry(sample)
+        payload = sample.to_dict()
+        return {
+            key: payload[key]
+            for key in (
+                "mission_elapsed_s",
+                "altitude_m",
+                "apoapsis_m",
+                "periapsis_m",
+                "time_to_apoapsis_s",
+                "time_to_periapsis_s",
+                "eccentricity",
+                "inclination_deg",
+                "orbital_speed_m_s",
+                "liquid_fuel",
+                "oxidizer",
+                "stage",
+                "situation",
+                "controllable",
+                "intact",
+            )
+        }
 
     def executeKRPC(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
         return self.execute_krpc(code, timeout_s=timeout_s)
@@ -179,14 +210,23 @@ class LiveKRPCTools:
             }
         started = time.monotonic()
         stdout = io.StringIO()
+        lock_wait_s = 0.0
+        acquired_lock = False
         try:
             self._validate_code(code)
             scope = self._execution_scope()
-            with self._krpc_lock, contextlib.redirect_stdout(stdout):
-                self._exec_with_timeout(code, scope, budget_s)
+            acquired_lock, lock_wait_s = self._acquire_krpc_lock(budget_s)
+            if not acquired_lock:
+                raise KRPCExecutionTimeout(
+                    f"executeKRPC exceeded {budget_s:.3f}s waiting for kRPC"
+                )
+            remaining_s = max(0.001, budget_s - lock_wait_s)
+            with contextlib.redirect_stdout(stdout):
+                self._exec_with_timeout(code, scope, remaining_s)
             result = {
                 "ok": True,
                 "duration_s": round(time.monotonic() - started, 3),
+                "lock_wait_s": round(lock_wait_s, 3),
                 "stdout": _truncate(stdout.getvalue()),
                 "result": _jsonable(scope.get("result")),
             }
@@ -206,6 +246,7 @@ class LiveKRPCTools:
             result = {
                 "ok": False,
                 "duration_s": round(time.monotonic() - started, 3),
+                "lock_wait_s": round(lock_wait_s, 3),
                 "stdout": _truncate(stdout.getvalue()),
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -213,6 +254,8 @@ class LiveKRPCTools:
             action.update(result)
             return result
         finally:
+            if acquired_lock:
+                self._krpc_lock.release()
             self.actions.append(action)
             self.artifacts.append_action(action)
             self._emit_event(
@@ -305,6 +348,8 @@ class LiveKRPCTools:
                 payload = {"script": self._async_status(script)}
             else:
                 payload = {"scripts": [self._async_status(script) for script in scripts]}
+            latest_telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
+            payload["latest_telemetry"] = latest_telemetry
         self._emit_event(
             {
                 "type": "tool_call",
@@ -340,6 +385,8 @@ class LiveKRPCTools:
 
         def async_print(*values: Any, sep: str = " ", end: str = "\n") -> None:
             stdout_chunks.append(sep.join(str(value) for value in values) + end)
+            with self._async_lock:
+                script.stdout = _truncate_tail("".join(stdout_chunks))
 
         def raise_if_stopped() -> None:
             if script.stop_requested:
@@ -380,9 +427,17 @@ class LiveKRPCTools:
             }
         )
         scope["__builtins__"] = {**_safe_builtins(), "print": async_print}
+        acquired_lock = False
         try:
-            with self._krpc_lock:
-                self._exec_with_trace_timeout(script.code, scope, script.timeout_s, script=script)
+            acquired_lock, lock_wait_s = self._acquire_krpc_lock(script.timeout_s)
+            with self._async_lock:
+                script.lock_wait_s = lock_wait_s
+            if not acquired_lock:
+                raise KRPCExecutionTimeout(
+                    f"executeKRPC exceeded {script.timeout_s:.3f}s waiting for kRPC"
+                )
+            remaining_s = max(0.001, script.timeout_s - lock_wait_s)
+            self._exec_with_trace_timeout(script.code, scope, remaining_s, script=script)
             with self._async_lock:
                 script.status = "done"
                 script.result = _jsonable(scope.get("result"))
@@ -394,8 +449,10 @@ class LiveKRPCTools:
             if not isinstance(exc, AsyncScriptStopped):
                 self.invalid_actions += 1
         finally:
+            if acquired_lock:
+                self._krpc_lock.release()
             with self._async_lock:
-                script.stdout = _truncate("".join(stdout_chunks))
+                script.stdout = _truncate_tail("".join(stdout_chunks))
                 script.finished_monotonic = time.monotonic()
                 self.artifacts.append_event(
                     {
@@ -418,6 +475,7 @@ class LiveKRPCTools:
             "stop_requested": script.stop_requested,
             "elapsed_s": round(elapsed_s, 3),
             "timeout_s": script.timeout_s,
+            "lock_wait_s": round(script.lock_wait_s, 3),
             "stdout": script.stdout,
             "result": _jsonable(script.result),
             "error_type": script.error_type,
@@ -426,6 +484,18 @@ class LiveKRPCTools:
 
     def record_telemetry(self, sample: TelemetrySample) -> None:
         self.telemetry.append(sample)
+        if self._orbit_has_diverged(sample):
+            self._orbit_diverged = True
+            self._emit_event(
+                {
+                    "type": "orbit_target_diverged",
+                    "mission_elapsed_s": sample.mission_elapsed_s,
+                    "apoapsis_m": sample.apoapsis_m,
+                    "periapsis_m": sample.periapsis_m,
+                    "apoapsis_target_max_m": self.scenario.target_orbit.apoapsis_max_m,
+                    "periapsis_target_min_m": self.scenario.target_orbit.periapsis_min_m,
+                }
+            )
         reason = self._terminal_reason(sample)
         if reason and not self.terminated:
             self.terminated = True
@@ -528,6 +598,7 @@ class LiveKRPCTools:
                 "wait_until": self.wait_until,
                 "getTelemetry": self.getTelemetry,
                 "getVehicleState": self.getVehicleState,
+                "getOrbitState": self.getOrbitState,
             }
             if extra is None:
                 self._scope = scope
@@ -631,6 +702,13 @@ class LiveKRPCTools:
             return f"vessel_{situation}"
         return None
 
+    def _orbit_has_diverged(self, sample: TelemetrySample) -> bool:
+        return (
+            not self._orbit_diverged
+            and sample.apoapsis_m > self.scenario.target_orbit.apoapsis_max_m * 5
+            and sample.periapsis_m < self.scenario.target_orbit.periapsis_min_m
+        )
+
     def wait_until(
         self,
         condition: Callable[[], bool],
@@ -668,6 +746,12 @@ class LiveKRPCTools:
         if budget <= 0:
             raise ValueError("timeout_s must be positive")
         return min(float(budget), self.max_sleep_s)
+
+    def _acquire_krpc_lock(self, timeout_s: float) -> tuple[bool, float]:
+        started = time.monotonic()
+        acquired = self._krpc_lock.acquire(timeout=timeout_s)
+        lock_wait_s = time.monotonic() - started
+        return acquired, lock_wait_s
 
     def _validate_code(self, code: str) -> None:
         if not code.strip():
@@ -752,18 +836,7 @@ class LiveKRPCTools:
         self.artifacts.append_event(event)
         if not self.live_events:
             return
-        if event.get("type") == "tool_call":
-            tool = event.get("tool", "tool")
-            status = ""
-            if "ok" in event:
-                status = " ok" if event["ok"] else " failed"
-            met = event.get("mission_elapsed_s")
-            met_text = f" met={float(met):.1f}s" if isinstance(met, int | float) else ""
-            extra = ""
-            if tool == "wait":
-                extra = f" seconds={event.get('seconds')} warp={event.get('time_warp_used')}"
-            print(f"[kspbench] {tool}{status}{met_text}{extra}", file=sys.stderr, flush=True)
-        elif event.get("type") == "time_warp_failed":
+        if event.get("type") == "time_warp_failed":
             print(
                 f"[kspbench] time warp failed; falling back to sleep: {event.get('error')}",
                 file=sys.stderr,
@@ -832,6 +905,12 @@ def _truncate(value: str, limit: int = 4000) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 15] + "...<truncated>"
+
+
+def _truncate_tail(value: str, limit: int = 4000) -> str:
+    if len(value) <= limit:
+        return value
+    return "<truncated>..." + value[-(limit - 15) :]
 
 
 def _jsonable(value: Any) -> Any:

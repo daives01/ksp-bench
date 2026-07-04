@@ -68,6 +68,10 @@ class FakeController:
             body="Kerbin",
             controllable=True,
             intact=True,
+            time_to_apoapsis_s=30.0,
+            time_to_periapsis_s=120.0,
+            eccentricity=0.1,
+            inclination_deg=0.0,
         )
 
     def read_vehicle_state(self) -> dict[str, object]:
@@ -77,6 +81,18 @@ class FakeController:
             "throttle": self.vessel.control.throttle,
             "current_stage_resources": {"LiquidFuel": 42.0, "Oxidizer": 50.0},
         }
+
+
+class DivergedController(FakeController):
+    def read_telemetry(self) -> TelemetrySample:
+        sample = super().read_telemetry()
+        return TelemetrySample(
+            **{
+                **sample.to_dict(),
+                "apoapsis_m": 1_000_000.0,
+                "periapsis_m": 60_000.0,
+            }
+        )
 
 
 class CrashedController(FakeController):
@@ -287,6 +303,36 @@ def test_execute_krpc_allows_calls_after_timeout(tmp_path) -> None:
     assert retry["result"]["mission_elapsed_s"] >= 1.0
 
 
+def test_execute_krpc_timeout_includes_lock_wait(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=FakeController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
+        artifacts=artifacts,
+    )
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock() -> None:
+        with tools.krpc_lock:
+            lock_held.set()
+            release_lock.wait(timeout=1.0)
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    lock_held.wait(timeout=1.0)
+    try:
+        result = tools.executeKRPC("result = getTelemetry()", timeout_s=0.05)
+    finally:
+        release_lock.set()
+        thread.join(timeout=1.0)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "KRPCExecutionTimeout"
+    assert result["lock_wait_s"] > 0
+    assert result["duration_s"] < 0.5
+
+
 def test_execute_krpc_allows_exception_handlers(tmp_path) -> None:
     artifacts = RunArtifacts.create(tmp_path, "live")
     tools = LiveKRPCTools(
@@ -328,6 +374,90 @@ def test_execute_krpc_async_completes_and_reports_status(tmp_path) -> None:
     assert status["script"]["status"] == "done"
     assert status["script"]["result"]["met"] >= 1.0
     assert "done" in status["script"]["stdout"]
+    assert status["latest_telemetry"]["time_to_apoapsis_s"] == 30.0
+
+
+def test_get_orbit_state_returns_compact_snapshot(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=FakeController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
+        artifacts=artifacts,
+    )
+
+    result = tools.executeKRPC("result = getOrbitState()")
+
+    assert result["ok"] is True
+    assert result["result"]["apoapsis_m"] == 1000.0
+    assert result["result"]["time_to_apoapsis_s"] == 30.0
+    assert "active_engines" not in result["result"]
+
+
+def test_execute_krpc_async_reports_stdout_while_running(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=FakeController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
+        artifacts=artifacts,
+        poll_interval_s=0.01,
+    )
+
+    started = tools.executeKRPCAsync("print('ready')\nsleep(0.2)\nprint('done')", timeout_s=1.0)
+    script_id = started["script_id"]
+
+    deadline = time.monotonic() + 1.0
+    status = tools.checkAsync(script_id)
+    while "ready" not in status["script"]["stdout"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+        status = tools.checkAsync(script_id)
+
+    assert status["script"]["status"] == "running"
+    assert "ready" in status["script"]["stdout"]
+    assert "done" not in status["script"]["stdout"]
+
+
+def test_execute_krpc_async_stdout_keeps_recent_tail(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=FakeController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
+        artifacts=artifacts,
+        poll_interval_s=0.01,
+    )
+
+    started = tools.executeKRPCAsync(
+        "for i in range(500):\n    print(f'line-{i:03d}', 'x' * 20)",
+        timeout_s=1.0,
+    )
+    script_id = started["script_id"]
+
+    deadline = time.monotonic() + 1.0
+    status = tools.checkAsync(script_id)
+    while status["script"]["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        status = tools.checkAsync(script_id)
+
+    stdout = status["script"]["stdout"]
+    assert status["script"]["status"] == "done"
+    assert len(stdout) <= 4000
+    assert stdout.startswith("<truncated>...")
+    assert "line-499" in stdout
+    assert "line-000" not in stdout
+
+
+def test_records_orbit_divergence_event_once(tmp_path) -> None:
+    artifacts = RunArtifacts.create(tmp_path, "live")
+    tools = LiveKRPCTools(
+        controller=DivergedController(),
+        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
+        artifacts=artifacts,
+    )
+
+    tools.getTelemetry()
+    tools.getTelemetry()
+
+    events = (tmp_path / "live" / "events.jsonl").read_text(encoding="utf-8")
+    assert events.count("orbit_target_diverged") == 1
 
 
 def test_kill_async_requests_cooperative_stop(tmp_path) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields
 from typing import Any
 
 
@@ -26,12 +26,19 @@ class TelemetrySample:
     body: str
     controllable: bool
     intact: bool
+    time_to_apoapsis_s: float = 0.0
+    time_to_periapsis_s: float = 0.0
+    eccentricity: float = 0.0
+    inclination_deg: float = 0.0
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> TelemetrySample:
         values: dict[str, Any] = {}
         for field in fields(cls):
             if field.name not in data:
+                if field.default is not MISSING:
+                    values[field.name] = field.default
+                    continue
                 raise ValueError(f"telemetry missing field: {field.name}")
             values[field.name] = data[field.name]
         return cls(**values)

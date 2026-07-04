@@ -31,7 +31,7 @@ To accomplish this, you can use the following tools:
 - ksp_execute: run Python code with kRPC. This is your main interface: read telemetry, inspect the
   vessel, stage, steer, throttle, and run short control loops from inside this tool.
 - ksp_execute_async: start a background kRPC Python script and immediately get a script id.
-- ksp_check: check background script status, recent stdout, result, and errors.
+- ksp_check: check background script status, recent stdout, result, errors, and latest telemetry.
 - ksp_kill: request cooperative stop for a background script.
 
 KSP is running in real wall-clock time. If you run a synchronous ksp_execute script that takes a
@@ -43,7 +43,7 @@ each other because throttle, staging, and autopilot are shared; coordinate them 
 
 The ksp_execute and ksp_execute_async code runs inside the harness with these names available:
 - conn, space_center, vessel
-- getTelemetry(), getVehicleState()
+- getTelemetry(), getVehicleState(), getOrbitState()
 - sleep(seconds), wait(seconds), wait_until(condition, timeout_s=seconds).
   Long waits are rejected in atmosphere; use small closed-loop sleeps there.
 - In async scripts only, should_stop() returns True after ksp_kill requests cooperative stop.
@@ -102,13 +102,15 @@ Benchmark tools:
   staging, steering, throttle changes, and short control loops.
 - `ksp_execute_async`: start sandboxed kRPC Python in the background and immediately get
   a script id. Use it for longer control loops, threshold guards, and monitors.
-- `ksp_check`: check one async script by script_id, or list all async scripts.
+- `ksp_check`: check one async script by script_id, or list all async scripts. It also returns
+  latest telemetry recorded by the harness, so use it to monitor async scripts without blocking
+  behind a running control loop.
 - `ksp_kill`: request cooperative stop for an async script.
 
 Snippet globals:
 
 - `conn`, `space_center`, `vessel`
-- `getTelemetry()`, `getVehicleState()`
+- `getTelemetry()`, `getVehicleState()`, `getOrbitState()`
 - `sleep(seconds)`, `wait(seconds)`, `wait_until(condition, timeout_s=seconds)`
 - async scripts also get `should_stop()`
 - `math` is already available; other imports are blocked
@@ -116,9 +118,12 @@ Snippet globals:
 Telemetry fields returned by `getTelemetry()`:
 
 `mission_elapsed_s`, `altitude_m`, `surface_altitude_m`, `apoapsis_m`, `periapsis_m`,
+`time_to_apoapsis_s`, `time_to_periapsis_s`, `eccentricity`, `inclination_deg`,
 `surface_speed_m_s`, `orbital_speed_m_s`, `vertical_speed_m_s`, `pitch_deg`,
 `heading_deg`, `roll_deg`, `stage`, `liquid_fuel`, `oxidizer`, `solid_fuel`,
 `dynamic_pressure_pa`, `situation`, `body`, `controllable`, `intact`.
+
+`getOrbitState()` returns a compact orbit/control snapshot for timing coast and burns.
 
 `getVehicleState()` includes total resources, current-stage resources, stages, engines,
 active engines, decouplers, and atmospheric status. Use `current_stage_resources` to
@@ -440,7 +445,7 @@ export const execute = tool({{
   args: {{
     code: tool.schema.string().describe(
       "Python code using conn, space_center, vessel, getTelemetry(), " +
-      "getVehicleState(), math, and short wait helpers.",
+      "getVehicleState(), getOrbitState(), math, and short wait helpers.",
     ),
     timeout_s: tool.schema.number().optional().describe(
       "Optional wall-clock timeout in seconds.",
@@ -459,7 +464,7 @@ export const execute_async = tool({{
   args: {{
     code: tool.schema.string().describe(
       "Python code using conn, space_center, vessel, getTelemetry(), " +
-      "getVehicleState(), math, short wait helpers, and should_stop().",
+      "getVehicleState(), getOrbitState(), math, short wait helpers, and should_stop().",
     ),
     timeout_s: tool.schema.number().optional().describe(
       "Optional wall-clock timeout in seconds.",
@@ -473,7 +478,7 @@ export const execute_async = tool({{
 export const check = tool({{
   description:
     "Check async script status. Omit script_id to list all scripts. Returns status, " +
-    "elapsed time, recent stdout, result, and any error.",
+    "elapsed time, recent stdout, result, latest telemetry, and any error.",
   args: {{
     script_id: tool.schema.string().optional().describe("Async script id to inspect."),
   }},
