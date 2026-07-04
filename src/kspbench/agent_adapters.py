@@ -16,14 +16,13 @@ from urllib.parse import urlparse
 from kspbench.config import Scenario
 from kspbench.live import LiveKRPCTools
 
-AGENT_PROMPT_TEMPLATE = """You are in charge of flying the Kerbal X rocket in KSP in realtime.
+AGENT_PROMPT_TEMPLATE = """You are in charge of flying a rocket in KSP in realtime.
 It is a multistage rocket with enough fuel if it is staged and flown well.
 
 The goal:
 - Reach a stable orbit around {body}.
 - Target apoapsis between {apoapsis_min_m:.0f}m and {apoapsis_max_m:.0f}m.
 - Target periapsis at least {periapsis_min_m:.0f}m.
-- Complete within {timeout_s:.0f}s mission elapsed time.
 
 Prefer the structured KSP tools:
 - ksp_observe: read telemetry, vehicle resources, staging, engines, and the target orbit.
@@ -405,11 +404,11 @@ def _write_installed_krpc_reference(reference_dir: Path) -> None:
         "- `python_client/service.py`: generated-service helper base classes.",
         "",
         "Useful searches:",
-        "- `grep -n \"class Vessel\" krpc_reference/python_client/services/spacecenter.py`",
-        "- `grep -n \"target_pitch_and_heading\" "
+        '- `grep -n "class Vessel" krpc_reference/python_client/services/spacecenter.py`',
+        '- `grep -n "target_pitch_and_heading" '
         "krpc_reference/python_client/services/spacecenter.py`",
-        "- `grep -n \"reference_frame\" krpc_reference/python_client/services/spacecenter.py`",
-        "- `grep -n \"resources_in_decouple_stage\" "
+        '- `grep -n "reference_frame" krpc_reference/python_client/services/spacecenter.py`',
+        '- `grep -n "resources_in_decouple_stage" '
         "krpc_reference/python_client/services/spacecenter.py`",
         "",
         f"Copied files: {len(copied)}",
