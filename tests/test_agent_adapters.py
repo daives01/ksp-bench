@@ -67,35 +67,34 @@ def test_prepare_opencode_workspace_copies_literal_krpc_sources(tmp_path) -> Non
     assert (reference_dir / "upstream_python_client/krpc/client.py").exists()
     assert (reference_dir / "upstream_spacecenter_service/Vessel.cs").exists()
     assert (reference_dir / "upstream_docs/api/space-center/vessel.tmpl").exists()
-    assert "literal kRPC source" in (reference_dir / "README.md").read_text(encoding="utf-8")
+    assert "kRPC source and Python client reference material" in (
+        reference_dir / "README.md"
+    ).read_text(encoding="utf-8")
     assert "upstream_spacecenter_service" in (
         reference_dir / "SOURCE_INDEX.md"
     ).read_text(encoding="utf-8")
 
 
-def test_prompt_names_custom_tools_not_raw_http() -> None:
+def test_prompt_is_flight_focused_without_internal_leaks() -> None:
     scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
 
     prompt = build_agent_prompt(scenario=scenario)
 
-    assert "ksp_help" not in prompt
-    assert "ksp_observe" in prompt
-    assert "ksp_throttle" in prompt
-    assert "ksp_stage" in prompt
-    assert "ksp_pitch_heading" in prompt
-    assert "ksp_prograde" in prompt
-    assert "ksp_wait" in prompt
-    assert "ksp_execute_python" in prompt
-    assert "ksp_start_task" in prompt
-    assert "ksp_check_task" in prompt
-    assert "ksp_stop_task" in prompt
-    assert "ksp_execute_async" not in prompt
+    assert "KSP flight agent" in prompt
+    assert "available KSP tools" in prompt
     assert "krpc_reference" in prompt
     assert "real wall-clock time" in prompt
+    assert "ksp_observe" not in prompt
+    assert "ksp_throttle" in prompt
+    assert "ksp_execute_async" not in prompt
     assert "ksp_docs" not in prompt
     assert "ksp_telemetry" not in prompt
     assert "getDocs" not in prompt
     assert "curl" not in prompt
+    assert "benchmark" not in prompt.lower()
+    assert "harness" not in prompt.lower()
+    assert "wrapper" not in prompt.lower()
+    assert "bash" not in prompt.lower()
     assert "vessel" in prompt
 
 
@@ -125,8 +124,9 @@ def test_ksp_mcp_lists_flight_tools() -> None:
         "observe",
         "throttle",
         "stage",
-        "pitch_heading",
-        "prograde",
+        "list_vehicles",
+        "set_vehicle",
+        "attitude",
         "wait",
         "execute_python",
         "start_task",

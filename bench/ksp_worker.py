@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -20,7 +21,14 @@ class Worker:
 
         self.scenario = load_scenario(scenario_path)
         self.artifacts = _artifacts(self.scenario, run_dir)
-        self.controller = KRPCController.connect(self.scenario)
+        self.controller: KRPCController | None = None
+        self.tools: LiveKRPCTools | None = None
+        self.selected_vehicle: dict[str, Any] | None = None
+        self._connect_tools()
+        self.artifacts.append_event({"type": "ksp_mcp_worker_started"})
+
+    def _connect_tools(self) -> None:
+        self.controller = KRPCController.connect(self.scenario, strict_vessel=False)
         self.tools = LiveKRPCTools(
             controller=self.controller,
             scenario=self.scenario,
@@ -30,30 +38,79 @@ class Worker:
             max_wait_s=_float_env("KSPBENCH_MAX_SLEEP", 240.0),
             poll_interval_s=_float_env("KSPBENCH_POLL_INTERVAL", 0.5),
             live_events=True,
+            task_controller_factory=lambda: KRPCController.connect(
+                self.scenario,
+                strict_vessel=False,
+            ),
         )
-        self.artifacts.append_event({"type": "ksp_mcp_worker_started"})
 
     def close(self) -> None:
         self.artifacts.append_event({"type": "ksp_mcp_worker_stopped"})
-        self.controller.close()
+        if self.controller is not None:
+            self.controller.close()
+
+    def reconnect(self) -> None:
+        old_controller = self.controller
+        try:
+            if old_controller is not None:
+                old_controller.close()
+        finally:
+            self._connect_tools()
+            if self.selected_vehicle is not None and self.controller is not None:
+                with contextlib.suppress(Exception):
+                    self.controller.select_vessel(**self.selected_vehicle)
+            self.artifacts.append_event({"type": "ksp_mcp_worker_reconnected"})
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = self._call_once(method, params)
+        except Exception as exc:
+            if not _looks_like_connection_failure(exc):
+                raise
+            self.reconnect()
+            return self._call_once(method, params)
+        if _result_is_connection_failure(result):
+            self.reconnect()
+            retry = self._call_once(method, params)
+            if isinstance(retry, dict):
+                retry.setdefault("reconnected", True)
+            if method == "set_vehicle" and retry.get("ok"):
+                self.selected_vehicle = _selection_params(params)
+            return retry
+        if method == "set_vehicle" and result.get("ok"):
+            self.selected_vehicle = _selection_params(params)
+        return result
+
+    def _call_once(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if self.tools is None:
+            raise RuntimeError("KSP tools are not connected")
         if method == "observe":
             return self.tools.observe()
         if method == "throttle":
             return self.tools.set_throttle(_number(params, "value"))
         if method == "stage":
             return self.tools.stage()
-        if method == "pitch_heading":
-            return self.tools.set_pitch_heading(
-                _number(params, "pitch"),
-                _number(params, "heading"),
+        if method == "list_vehicles":
+            return self.tools.list_vehicles()
+        if method == "set_vehicle":
+            return self.tools.set_vehicle(
+                name=_optional_str(params, "name"),
+                index=_optional_int(params, "index"),
+                make_active=_optional_bool(params, "make_active", default=True),
             )
-        if method == "prograde":
+        if method == "attitude":
+            mode = params.get("mode")
+            if not isinstance(mode, str):
+                raise TypeError("mode must be a string")
             frame = params.get("reference_frame", "orbital")
             if not isinstance(frame, str):
                 raise TypeError("reference_frame must be a string")
-            return self.tools.hold_prograde(frame)
+            return self.tools.set_attitude(
+                mode,
+                pitch=_optional_number(params, "pitch"),
+                heading=_optional_number(params, "heading"),
+                reference_frame=frame,
+            )
         if method == "wait":
             return self.tools.wait(_number(params, "seconds"))
         if method == "execute_python":
@@ -67,9 +124,9 @@ class Worker:
                 raise TypeError("code must be a string")
             return self.tools.start_task(code, timeout_s=_optional_number(params, "timeout_s"))
         if method == "check_task":
-            return self.tools.check_task()
+            return self.tools.check_task(task_id=_optional_str(params, "task_id"))
         if method == "stop_task":
-            return self.tools.stop_task()
+            return self.tools.stop_task(task_id=_optional_str(params, "task_id"))
         raise ValueError(f"unknown method: {method}")
 
 
@@ -129,6 +186,61 @@ def _error(exc: Exception) -> dict[str, str]:
     return {"type": type(exc).__name__, "message": str(exc)}
 
 
+def _result_is_connection_failure(result: dict[str, Any]) -> bool:
+    if result.get("ok") is not False:
+        return False
+    error = str(result.get("error", ""))
+    error_type = str(result.get("error_type", ""))
+    return (
+        error_type
+        in {
+            "ConnectionError",
+            "ConnectionRefusedError",
+            "ConnectionResetError",
+            "BrokenPipeError",
+            "EOFError",
+            "TimeoutError",
+        }
+        or _connection_failure_text(error)
+    )
+
+
+def _looks_like_connection_failure(exc: Exception) -> bool:
+    return _connection_failure_text(str(exc)) or type(exc).__name__ in {
+        "ConnectionError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "BrokenPipeError",
+        "EOFError",
+        "TimeoutError",
+    }
+
+
+def _connection_failure_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "connection",
+            "broken pipe",
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "no route to host",
+            "socket",
+            "eof",
+        )
+    )
+
+
+def _selection_params(params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": _optional_str(params, "name"),
+        "index": _optional_int(params, "index"),
+        "make_active": _optional_bool(params, "make_active", default=True),
+    }
+
+
 def _number(params: dict[str, Any], key: str) -> float:
     value = params.get(key)
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -140,6 +252,33 @@ def _optional_number(params: dict[str, Any], key: str) -> float | None:
     if key not in params or params[key] is None:
         return None
     return _number(params, key)
+
+
+def _optional_int(params: dict[str, Any], key: str) -> int | None:
+    if key not in params or params[key] is None:
+        return None
+    value = params[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be an integer")
+    return value
+
+
+def _optional_str(params: dict[str, Any], key: str) -> str | None:
+    if key not in params or params[key] is None:
+        return None
+    value = params[key]
+    if not isinstance(value, str):
+        raise TypeError(f"{key} must be a string")
+    return value
+
+
+def _optional_bool(params: dict[str, Any], key: str, *, default: bool) -> bool:
+    if key not in params or params[key] is None:
+        return default
+    value = params[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be a boolean")
+    return value
 
 
 def _float_env(name: str, default: float) -> float:

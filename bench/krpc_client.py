@@ -60,17 +60,23 @@ def check_krpc_package() -> DoctorCheck:
 
 
 class KRPCController:
-    def __init__(self, conn: Any, scenario: Scenario) -> None:
+    def __init__(self, conn: Any, scenario: Scenario, *, strict_vessel: bool = True) -> None:
         self.conn = conn
         self.scenario = scenario
         self.vessel = conn.space_center.active_vessel
-        if scenario.vessel_name and self.vessel.name != scenario.vessel_name:
+        if strict_vessel and scenario.vessel_name and self.vessel.name != scenario.vessel_name:
             raise ValueError(
                 f"active vessel is {self.vessel.name!r}, expected {scenario.vessel_name!r}"
             )
 
     @classmethod
-    def connect(cls, scenario: Scenario, config: KRPCConfig | None = None) -> KRPCController:
+    def connect(
+        cls,
+        scenario: Scenario,
+        config: KRPCConfig | None = None,
+        *,
+        strict_vessel: bool = True,
+    ) -> KRPCController:
         try:
             import krpc  # type: ignore
         except ImportError as exc:
@@ -85,7 +91,7 @@ class KRPCController:
             rpc_port=krpc_config.rpc_port,
             stream_port=krpc_config.stream_port,
         )
-        return cls(conn, scenario)
+        return cls(conn, scenario, strict_vessel=strict_vessel)
 
     def read_telemetry(self) -> TelemetrySample:
         vessel = self.vessel
@@ -173,6 +179,55 @@ class KRPCController:
             "active_engines": _active_engines(vessel),
             "engines": _engines(vessel),
             "decouplers": _decouplers(vessel),
+        }
+
+    def list_vessels(self) -> dict[str, Any]:
+        vessels = list(_safe_value(lambda: self.conn.space_center.vessels, default=[]))
+        current_index: int | None = None
+        summaries: list[dict[str, Any]] = []
+        for index, vessel in enumerate(vessels):
+            is_current = vessel == self.vessel
+            if is_current:
+                current_index = index
+            summaries.append(_vessel_summary(vessel, index=index, current=is_current))
+        return {
+            "current_index": current_index,
+            "current": _vessel_summary(self.vessel, index=current_index, current=True),
+            "vehicles": summaries,
+        }
+
+    def select_vessel(
+        self,
+        *,
+        name: str | None = None,
+        index: int | None = None,
+        make_active: bool = True,
+    ) -> dict[str, Any]:
+        if (name is None) == (index is None):
+            raise ValueError("pass exactly one of name or index")
+        vessels = list(_safe_value(lambda: self.conn.space_center.vessels, default=[]))
+        if index is not None:
+            selected_index = int(index)
+            if selected_index < 0 or selected_index >= len(vessels):
+                raise IndexError(f"vehicle index {selected_index} is out of range")
+            vessel = vessels[selected_index]
+        else:
+            matches = [
+                (candidate_index, candidate)
+                for candidate_index, candidate in enumerate(vessels)
+                if _safe_value(lambda candidate=candidate: candidate.name, default=None) == name
+            ]
+            if not matches:
+                raise ValueError(f"no vehicle named {name!r}")
+            if len(matches) > 1:
+                raise ValueError(f"multiple vehicles named {name!r}; select by index")
+            selected_index, vessel = matches[0]
+        self.vessel = vessel
+        if make_active:
+            self.conn.space_center.active_vessel = vessel
+        return {
+            "selected": _vessel_summary(vessel, index=selected_index, current=True),
+            "made_active": make_active,
         }
 
     def prepare_for_launchpad_run(self, *, wait_s: float = 2.0) -> None:
@@ -367,6 +422,25 @@ def _decouplers(vessel: Any) -> list[dict[str, Any]]:
             }
         )
     return decouplers
+
+
+def _vessel_summary(
+    vessel: Any,
+    *,
+    index: int | None,
+    current: bool,
+) -> dict[str, Any]:
+    orbit = _safe_value(lambda: vessel.orbit, default=None)
+    body = _safe_value(lambda: orbit.body if orbit is not None else None, default=None)
+    return {
+        "index": index,
+        "name": _safe_value(lambda: vessel.name, default="unknown"),
+        "type": _enum_name(_safe_value(lambda: vessel.type, default="unknown")),
+        "situation": _enum_name(_safe_value(lambda: vessel.situation, default="unknown")),
+        "body": _safe_value(lambda: body.name, default="unknown"),
+        "mission_elapsed_s": _safe_float(lambda: vessel.met),
+        "current": current,
+    }
 
 
 def _safe_value(getter: Any, *, default: Any) -> Any:

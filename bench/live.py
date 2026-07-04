@@ -30,10 +30,6 @@ class FlightTerminated(FlightToolError):
     """Raised when the active vessel can no longer continue the benchmark."""
 
 
-class AtmosphericWaitDisallowed(FlightToolError):
-    """Raised when an agent tries to wait too long while flying in atmosphere."""
-
-
 class TaskStopped(FlightToolError):
     """Raised when a background task observes a cooperative stop request."""
 
@@ -91,7 +87,7 @@ class FlightSession:
         self.termination_reason: str | None = None
         self._krpc_lock = threading.RLock()
         self._task_lock = threading.Lock()
-        self._task: ControlTask | None = None
+        self._tasks: dict[str, ControlTask] = {}
         self._task_controller_factory = task_controller_factory or (
             lambda: KRPCController.connect(scenario)
         )
@@ -153,30 +149,45 @@ class FlightSession:
 
         return self._command("stage", apply)
 
-    def set_pitch_heading(self, pitch: float, heading: float) -> dict[str, Any]:
-        pitch = float(pitch)
-        heading = float(heading)
+    def set_attitude(
+        self,
+        mode: str,
+        *,
+        pitch: float | None = None,
+        heading: float | None = None,
+        reference_frame: str = "orbital",
+    ) -> dict[str, Any]:
+        mode = mode.replace("-", "_")
+        if mode == "pitch_heading":
+            if pitch is None or heading is None:
+                raise ValueError("pitch and heading are required for pitch_heading mode")
+            pitch = float(pitch)
+            heading = float(heading)
 
-        def apply() -> dict[str, Any]:
-            autopilot = self.controller.vessel.auto_pilot
-            autopilot.engage()
-            autopilot.target_pitch_and_heading(pitch, heading)
-            return {"pitch": pitch, "heading": heading}
+            def apply() -> dict[str, Any]:
+                autopilot = self.controller.vessel.auto_pilot
+                autopilot.engage()
+                autopilot.target_pitch_and_heading(pitch, heading)
+                return {"mode": mode, "pitch": pitch, "heading": heading}
 
-        return self._command("set_pitch_heading", apply, pitch=pitch, heading=heading)
+            return self._command("set_attitude", apply, mode=mode, pitch=pitch, heading=heading)
 
-    def hold_prograde(self, reference_frame: str = "orbital") -> dict[str, Any]:
         def apply() -> dict[str, Any]:
             vessel = self.controller.vessel
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
+            direction = _flight_direction(flight, mode)
             autopilot = vessel.auto_pilot
             autopilot.reference_frame = frame
-            autopilot.target_direction = flight.prograde
+            autopilot.target_direction = direction
             autopilot.engage()
-            return {"reference_frame": reference_frame, "target_direction": flight.prograde}
+            return {
+                "mode": mode,
+                "reference_frame": reference_frame,
+                "target_direction": direction,
+            }
 
-        return self._command("hold_prograde", apply, reference_frame=reference_frame)
+        return self._command("set_attitude", apply, mode=mode, reference_frame=reference_frame)
 
     def wait(self, seconds: float) -> dict[str, Any]:
         started = time.monotonic()
@@ -257,10 +268,6 @@ class FlightSession:
             self._raise_if_terminated()
             self._validate_code(code)
             with self._task_lock:
-                if self._task and self._task.status == "running":
-                    raise FlightToolError(
-                        f"task {self._task.task_id} is already running; stop it first"
-                    )
                 task_id = f"task-{self._next_task_id}"
                 self._next_task_id += 1
                 task = ControlTask(
@@ -269,11 +276,11 @@ class FlightSession:
                     timeout_s=budget_s,
                     started_monotonic=time.monotonic(),
                 )
-                self._task = task
+                self._tasks[task_id] = task
             thread = threading.Thread(
                 target=self._run_task,
                 args=(task,),
-                name="bench-control-task",
+                name=f"bench-control-{task.task_id}",
                 daemon=True,
             )
             task.thread = thread
@@ -290,23 +297,69 @@ class FlightSession:
         finally:
             self._append_action(action)
 
-    def check_task(self) -> dict[str, Any]:
+    def check_task(self, task_id: str | None = None) -> dict[str, Any]:
         with self._task_lock:
-            status = self._task_status(self._task) if self._task else None
+            if task_id is not None:
+                task = self._tasks.get(task_id)
+                status = self._task_status(task)
+                statuses = [status] if status else []
+            else:
+                statuses = [self._task_status(task) for task in self._tasks.values()]
+                status = _current_task_status(statuses)
         latest_telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
         self._record_action("check_task", ok=True)
-        return {"ok": True, "task": status, "latest_telemetry": latest_telemetry}
+        return {
+            "ok": True,
+            "task": status,
+            "tasks": statuses,
+            "latest_telemetry": latest_telemetry,
+        }
 
-    def stop_task(self) -> dict[str, Any]:
+    def stop_task(self, task_id: str | None = None) -> dict[str, Any]:
         with self._task_lock:
-            if self._task is None:
-                status = None
+            task: ControlTask | None
+            if task_id is not None:
+                task = self._tasks.get(task_id)
+                if task is None:
+                    self._record_action("stop_task", ok=False, task_id=task_id)
+                    return {"ok": False, "error": f"unknown task_id: {task_id}", "task": None}
             else:
-                if self._task.status == "running":
-                    self._task.stop_requested = True
-                status = self._task_status(self._task)
+                running = [task for task in self._tasks.values() if task.status == "running"]
+                if len(running) > 1:
+                    ids = ", ".join(task.task_id for task in running)
+                    self._record_action("stop_task", ok=False)
+                    return {
+                        "ok": False,
+                        "error": f"multiple tasks are running; pass task_id ({ids})",
+                        "task": None,
+                    }
+                task = running[0] if running else _latest_task(self._tasks)
+            if task is not None and task.status == "running":
+                task.stop_requested = True
+            status = self._task_status(task)
         self._record_action("stop_task", ok=True)
         return {"ok": True, "task": status}
+
+    def list_vehicles(self) -> dict[str, Any]:
+        return self._command("list_vehicles", self.controller.list_vessels)
+
+    def set_vehicle(
+        self,
+        *,
+        name: str | None = None,
+        index: int | None = None,
+        make_active: bool = True,
+    ) -> dict[str, Any]:
+        def apply() -> dict[str, Any]:
+            return self.controller.select_vessel(name=name, index=index, make_active=make_active)
+
+        return self._command(
+            "set_vehicle",
+            apply,
+            name=name,
+            index=index,
+            make_active=make_active,
+        )
 
     def getTelemetry(self) -> dict[str, Any]:
         return self.observe()["telemetry"]
@@ -347,17 +400,21 @@ class FlightSession:
         return result
 
     def checkAsync(self, script_id: str | None = None) -> dict[str, Any]:
-        result = self.check_task()
+        result = self.check_task(task_id=script_id)
         task = result.pop("task")
-        if script_id is not None and task is not None and script_id != task.get("task_id"):
+        if script_id is not None and task is None:
             return {"ok": False, "error": f"unknown script_id: {script_id}"}
-        return {"ok": True, "script": task, "latest_telemetry": result["latest_telemetry"]}
+        return {
+            "ok": True,
+            "script": task,
+            "scripts": result["tasks"],
+            "latest_telemetry": result["latest_telemetry"],
+        }
 
     def killAsync(self, script_id: str) -> dict[str, Any]:
-        current = self.check_task().get("task")
-        if current is None or script_id != current.get("task_id"):
+        result = self.stop_task(task_id=script_id)
+        if not result.get("ok"):
             return {"ok": False, "error": f"unknown script_id: {script_id}"}
-        result = self.stop_task()
         return {"ok": True, "status": "stop_requested", "script": result["task"]}
 
     def record_telemetry(self, sample: TelemetrySample) -> None:
@@ -383,13 +440,13 @@ class FlightSession:
 
     def _command(
         self,
-        name: str,
+        action_name: str,
         apply: Callable[[], dict[str, Any]],
         **params: Any,
     ) -> dict[str, Any]:
         started = time.monotonic()
         action: dict[str, Any] = {
-            "type": name,
+            "type": action_name,
             "mission_elapsed_s": self._latest_mission_elapsed_s(),
             **params,
         }
@@ -479,7 +536,6 @@ class FlightSession:
             raise ValueError("wait seconds must be non-negative")
         if seconds > self.max_wait_s:
             raise ValueError(f"wait seconds exceeds max_wait_s={self.max_wait_s}")
-        self._raise_if_atmospheric_wait(seconds, controller=controller)
         start_met = self._latest_mission_elapsed_s()
         target_met = start_met + seconds
         self._maybe_time_warp_to(target_met, controller=controller)
@@ -493,14 +549,6 @@ class FlightSession:
             time.sleep(min(self.poll_interval_s, remaining_met))
             self._read_telemetry_or_terminate(controller)
             self._raise_if_terminated()
-
-    def _raise_if_atmospheric_wait(self, seconds: float, *, controller: KRPCController) -> None:
-        if seconds <= self.max_atmospheric_wait_s or not self._in_atmosphere(controller):
-            return
-        raise AtmosphericWaitDisallowed(
-            f"wait({seconds:g}) is disabled in atmosphere; use waits <= "
-            f"{self.max_atmospheric_wait_s:g}s and re-check telemetry"
-        )
 
     def _in_atmosphere(self, controller: KRPCController) -> bool:
         sample = self.telemetry[-1] if self.telemetry else self._read_telemetry_or_terminate(
@@ -630,14 +678,15 @@ class FlightSession:
 
     def _raise_if_task_running(self, tool_name: str) -> None:
         with self._task_lock:
-            task = self._task
-            if task is None or task.status != "running":
+            running = [task for task in self._tasks.values() if task.status == "running"]
+            running_elsewhere = [
+                task for task in running if task.thread is not threading.current_thread()
+            ]
+            if not running_elsewhere:
                 return
-            if task.thread is threading.current_thread():
-                return
-            task_id = task.task_id
+            task_ids = ", ".join(task.task_id for task in running_elsewhere)
         raise FlightToolError(
-            f"task {task_id} is running; use ksp_check_task or ksp_stop_task before "
+            f"tasks are running ({task_ids}); use ksp_check_task or ksp_stop_task before "
             f"calling {tool_name}"
         )
 
@@ -688,29 +737,41 @@ class FlightSession:
                 "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
             }
 
-        def scoped_pitch_heading(pitch: float, heading: float) -> dict[str, Any]:
-            autopilot = controller.vessel.auto_pilot
-            autopilot.engage()
-            autopilot.target_pitch_and_heading(float(pitch), float(heading))
-            return {
-                "ok": True,
-                "pitch": float(pitch),
-                "heading": float(heading),
-                "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
-            }
+        def scoped_attitude(
+            mode: str,
+            *,
+            pitch: float | None = None,
+            heading: float | None = None,
+            reference_frame: str = "orbital",
+        ) -> dict[str, Any]:
+            mode = mode.replace("-", "_")
+            if mode == "pitch_heading":
+                if pitch is None or heading is None:
+                    raise ValueError("pitch and heading are required for pitch_heading mode")
+                autopilot = controller.vessel.auto_pilot
+                autopilot.engage()
+                autopilot.target_pitch_and_heading(float(pitch), float(heading))
+                return {
+                    "ok": True,
+                    "mode": mode,
+                    "pitch": float(pitch),
+                    "heading": float(heading),
+                    "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
+                }
 
-        def scoped_prograde(reference_frame: str = "orbital") -> dict[str, Any]:
             vessel = controller.vessel
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
+            direction = _flight_direction(flight, mode)
             autopilot = vessel.auto_pilot
             autopilot.reference_frame = frame
-            autopilot.target_direction = flight.prograde
+            autopilot.target_direction = direction
             autopilot.engage()
             return {
                 "ok": True,
+                "mode": mode,
                 "reference_frame": reference_frame,
-                "target_direction": flight.prograde,
+                "target_direction": direction,
                 "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
             }
 
@@ -727,8 +788,7 @@ class FlightSession:
             "ksp_observe": observe,
             "ksp_throttle": scoped_throttle,
             "ksp_stage": scoped_stage,
-            "ksp_pitch_heading": scoped_pitch_heading,
-            "ksp_prograde": scoped_prograde,
+            "ksp_attitude": scoped_attitude,
             "ksp_wait": lambda seconds: self._sleep(float(seconds), controller=controller),
             "sleep": lambda seconds: self._sleep(float(seconds), controller=controller),
             "wait": lambda seconds: self._sleep(float(seconds), controller=controller),
@@ -777,7 +837,7 @@ class FlightSession:
             if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
                 raise FlightToolError("dunder attributes are not allowed")
             if isinstance(node, ast.Attribute) and node.attr in banned_krpc_methods:
-                raise FlightToolError(f"{node.attr} is reserved for the benchmark harness")
+                raise FlightToolError(f"{node.attr} is not available during flight")
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
@@ -803,7 +863,7 @@ class FlightSession:
         signal.signal(signal.SIGALRM, handle_timeout)
         signal.setitimer(signal.ITIMER_REAL, timeout_s)
         try:
-            exec(compile(code, "<bench-python>", "exec"), scope, scope)
+            exec(compile(code, "<ksp-python>", "exec"), scope, scope)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -828,7 +888,7 @@ class FlightSession:
 
         sys.settrace(trace_timeout)
         try:
-            exec(compile(code, "<bench-task>", "exec"), scope, scope)
+            exec(compile(code, "<ksp-task>", "exec"), scope, scope)
         finally:
             sys.settrace(previous_trace)
 
@@ -915,6 +975,35 @@ def _reference_frame(vessel: Any, name: str) -> Any:
     if name == "vessel_surface":
         return vessel.surface_reference_frame
     raise ValueError("reference_frame must be one of: surface, orbital, vessel_surface")
+
+
+def _flight_direction(flight: Any, mode: str) -> Any:
+    directions = {
+        "prograde": "prograde",
+        "retrograde": "retrograde",
+        "normal": "normal",
+        "anti_normal": "anti_normal",
+        "radial": "radial",
+        "anti_radial": "anti_radial",
+    }
+    attr = directions.get(mode)
+    if attr is None:
+        raise ValueError(
+            "mode must be one of: pitch_heading, prograde, retrograde, normal, "
+            "anti_normal, radial, anti_radial"
+        )
+    return getattr(flight, attr)
+
+
+def _current_task_status(statuses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    running = [status for status in statuses if status.get("running")]
+    if running:
+        return running[-1]
+    return statuses[-1] if statuses else None
+
+
+def _latest_task(tasks: dict[str, ControlTask]) -> ControlTask | None:
+    return next(reversed(tasks.values())) if tasks else None
 
 
 def _sample_propellant(sample: TelemetrySample) -> float:

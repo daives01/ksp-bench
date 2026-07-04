@@ -44,9 +44,21 @@ class FakeController:
             auto_pilot=FakeAutoPilot(),
             orbit=SimpleNamespace(body=self.body),
             surface_reference_frame="vessel-surface-frame",
-            flight=lambda _frame: SimpleNamespace(prograde=(1.0, 0.0, 0.0)),
+            type="ship",
+            situation="pre_launch",
+            met=0.0,
+            flight=lambda _frame: SimpleNamespace(
+                prograde=(1.0, 0.0, 0.0),
+                retrograde=(-1.0, 0.0, 0.0),
+                normal=(0.0, 1.0, 0.0),
+                anti_normal=(0.0, -1.0, 0.0),
+                radial=(0.0, 0.0, 1.0),
+                anti_radial=(0.0, 0.0, -1.0),
+            ),
         )
-        self.conn = SimpleNamespace(space_center=SimpleNamespace(active_vessel=self.vessel))
+        self.conn = SimpleNamespace(
+            space_center=SimpleNamespace(active_vessel=self.vessel, vessels=[self.vessel])
+        )
         self.met = 0.0
 
     def read_telemetry(self) -> TelemetrySample:
@@ -84,6 +96,47 @@ class FakeController:
             "current_stage": 1,
             "throttle": self.vessel.control.throttle,
             "current_stage_resources": {"LiquidFuel": 42.0, "Oxidizer": 50.0},
+        }
+
+    def list_vessels(self) -> dict[str, object]:
+        vehicles = [
+            {"index": index, "name": vessel.name, "current": vessel is self.vessel}
+            for index, vessel in enumerate(self.conn.space_center.vessels)
+        ]
+        return {
+            "current_index": next(
+                (vehicle["index"] for vehicle in vehicles if vehicle["current"]),
+                None,
+            ),
+            "current": next(
+                (vehicle for vehicle in vehicles if vehicle["current"]),
+                None,
+            ),
+            "vehicles": vehicles,
+        }
+
+    def select_vessel(
+        self,
+        *,
+        name: str | None = None,
+        index: int | None = None,
+        make_active: bool = True,
+    ) -> dict[str, object]:
+        if index is None:
+            matches = [
+                (candidate_index, vessel)
+                for candidate_index, vessel in enumerate(self.conn.space_center.vessels)
+                if vessel.name == name
+            ]
+            index, vessel = matches[0]
+        else:
+            vessel = self.conn.space_center.vessels[index]
+        self.vessel = vessel
+        if make_active:
+            self.conn.space_center.active_vessel = vessel
+        return {
+            "selected": {"index": index, "name": vessel.name, "current": True},
+            "made_active": make_active,
         }
 
     def close(self) -> None:
@@ -197,19 +250,23 @@ def test_structured_controls_log_actions(tmp_path) -> None:
 
     throttle = session.set_throttle(0.7)
     stage = session.stage()
-    session.set_pitch_heading(80, 90)
-    prograde = session.hold_prograde()
+    session.set_attitude("pitch_heading", pitch=80, heading=90)
+    prograde = session.set_attitude("prograde")
+    normal = session.set_attitude("normal")
 
     assert throttle["ok"] is True
     assert controller.vessel.control.throttle == 0.7
     assert stage["activated_parts"] == 1
     assert controller.vessel.auto_pilot.pitch == 80
     assert prograde["reference_frame"] == "orbital"
+    assert normal["mode"] == "normal"
+    assert controller.vessel.auto_pilot.target_direction == (0.0, 1.0, 0.0)
     assert [action["type"] for action in session.actions] == [
         "set_throttle",
         "stage",
-        "set_pitch_heading",
-        "hold_prograde",
+        "set_attitude",
+        "set_attitude",
+        "set_attitude",
     ]
 
 
@@ -257,7 +314,7 @@ def test_execute_python_exposes_flat_observe_and_tool_aliases(tmp_path) -> None:
     result = session.execute_python(
         "telem = observe()\n"
         "ksp_throttle(0.25)\n"
-        "ksp_pitch_heading(75, 90)\n"
+        "ksp_attitude('pitch_heading', pitch=75, heading=90)\n"
         "result = {\n"
         "    'altitude': telem['altitude_m'],\n"
         "    'vehicle': telem['vehicle']['name'],\n"
@@ -271,17 +328,26 @@ def test_execute_python_exposes_flat_observe_and_tool_aliases(tmp_path) -> None:
     assert result["result"]["throttle"] == 0.25
 
 
-def test_only_one_background_task_runs_at_a_time(tmp_path) -> None:
+def test_multiple_background_tasks_run_and_stop_by_id(tmp_path) -> None:
     session = _session(tmp_path, poll_interval_s=0.01)
 
     first = session.start_task("while not should_stop():\n    sleep(0.02)", timeout_s=1.0)
-    second = session.start_task("result = 'nope'", timeout_s=1.0)
-    stopped = session.stop_task()
+    second = session.start_task("while not should_stop():\n    sleep(0.02)", timeout_s=1.0)
+    status = session.check_task()
+    ambiguous = session.stop_task()
+    stopped = session.stop_task(task_id=first["task_id"])
 
     assert first["ok"] is True
-    assert second["ok"] is False
-    assert "already running" in second["error"]
+    assert second["ok"] is True
+    assert first["task_id"] != second["task_id"]
+    assert {task["task_id"] for task in status["tasks"]} == {
+        first["task_id"],
+        second["task_id"],
+    }
+    assert ambiguous["ok"] is False
+    assert "multiple tasks" in ambiguous["error"]
     assert stopped["ok"] is True
+    session.stop_task(task_id=second["task_id"])
 
 
 def test_foreground_tools_work_while_background_task_runs_on_separate_controller(
@@ -334,15 +400,31 @@ def test_background_task_reports_result_and_stdout(tmp_path) -> None:
     assert "done" in status["task"]["stdout"]
 
 
-def test_wait_rejects_long_atmospheric_wait(tmp_path) -> None:
+def test_wait_in_atmosphere_does_not_time_warp(tmp_path) -> None:
     controller = FakeController()
     controller.body.atmosphere_depth = 70000.0
     session = _session(tmp_path, controller=controller, max_atmospheric_wait_s=2.0)
 
-    result = session.wait(10.0)
+    result = session.wait(2.0)
 
-    assert result["ok"] is False
-    assert result["error_type"] == "AtmosphericWaitDisallowed"
+    assert result["ok"] is True
+
+
+def test_vehicle_selection_is_stateful(tmp_path) -> None:
+    controller = FakeController()
+    other = SimpleNamespace(**controller.vessel.__dict__)
+    other.name = "Mun Probe"
+    controller.conn.space_center.vessels = [controller.vessel, other]
+    session = _session(tmp_path, controller=controller)
+
+    listed = session.list_vehicles()
+    selected = session.set_vehicle(index=1)
+    observed = session.observe()
+
+    assert listed["vehicles"][0]["name"] == "Kerbal X"
+    assert selected["selected"]["name"] == "Mun Probe"
+    assert observed["vehicle"]["name"] == "Mun Probe"
+    assert controller.conn.space_center.active_vessel is other
 
 
 def test_wait_stops_when_vessel_is_destroyed(tmp_path) -> None:

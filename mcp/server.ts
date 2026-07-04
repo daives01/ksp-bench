@@ -46,34 +46,65 @@ const tools: ToolDefinition[] = [
     inputSchema: objectSchema({}),
   },
   {
-    name: "pitch_heading",
-    description: "Engage autopilot and target pitch and heading in degrees.",
-    inputSchema: objectSchema({
-      pitch: { type: "number", description: "Pitch in degrees." },
-      heading: { type: "number", description: "Heading in degrees." },
-    }),
+    name: "list_vehicles",
+    description: "List known KSP vehicles and show which one this MCP session is controlling.",
+    inputSchema: objectSchema({}),
   },
   {
-    name: "prograde",
-    description: "Engage autopilot and hold prograde.",
+    name: "set_vehicle",
+    description: "Select the vehicle this MCP session controls by list index or exact name.",
     inputSchema: objectSchema({
-      reference_frame: {
+      index: {
+        type: "integer",
+        minimum: 0,
+        description: "Vehicle index from list_vehicles. Pass either index or name.",
+      },
+      name: {
         type: "string",
-        enum: ["orbital", "surface", "vessel_surface"],
-        description: "Reference frame. Defaults to orbital.",
+        description: "Exact vehicle name from list_vehicles. Pass either name or index.",
+      },
+      make_active: {
+        type: "boolean",
+        description: "Also make the selected vehicle active in KSP. Defaults to true.",
       },
     }, []),
   },
   {
+    name: "attitude",
+    description: "Engage autopilot. Use mode=pitch_heading with pitch/heading, or hold prograde/retrograde/normal/anti_normal/radial/anti_radial in a reference frame.",
+    inputSchema: objectSchema({
+      mode: {
+        type: "string",
+        enum: [
+          "pitch_heading",
+          "prograde",
+          "retrograde",
+          "normal",
+          "anti_normal",
+          "radial",
+          "anti_radial",
+        ],
+        description: "Autopilot attitude mode.",
+      },
+      pitch: { type: "number", description: "Pitch in degrees; required for pitch_heading." },
+      heading: { type: "number", description: "Heading in degrees; required for pitch_heading." },
+      reference_frame: {
+        type: "string",
+        enum: ["orbital", "surface", "vessel_surface"],
+        description: "Reference frame for vector modes. Defaults to orbital.",
+      },
+    }, ["mode"]),
+  },
+  {
     name: "wait",
-    description: "Wait while the harness samples telemetry.",
+    description: "Wait while flight continues and telemetry updates. In atmosphere this does not time warp; avoid very long atmospheric waits unless intentionally letting real time pass without spending agent tokens.",
     inputSchema: objectSchema({
       seconds: { type: "number", minimum: 0, description: "Seconds to wait." },
     }),
   },
   {
     name: "execute_python",
-    description: "Run short direct kRPC Python for APIs the structured tools do not cover.",
+    description: "Run a short kRPC Python snippet for APIs the structured tools do not cover.",
     inputSchema: objectSchema({
       code: { type: "string", description: "Python code." },
       timeout_s: { type: "number", minimum: 0, description: "Optional wall-clock timeout." },
@@ -81,7 +112,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "start_task",
-    description: "Start one background kRPC Python control loop.",
+    description: "Start a longer-running kRPC Python control loop. Returns a task_id for check_task/stop_task.",
     inputSchema: objectSchema({
       code: { type: "string", description: "Python code." },
       timeout_s: { type: "number", minimum: 0, description: "Optional wall-clock timeout." },
@@ -89,13 +120,17 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "check_task",
-    description: "Check the background task status and latest telemetry.",
-    inputSchema: objectSchema({}),
+    description: "Check background task status and latest telemetry. Omit task_id to list all tasks.",
+    inputSchema: objectSchema({
+      task_id: { type: "string", description: "Optional task_id returned by start_task." },
+    }, []),
   },
   {
     name: "stop_task",
-    description: "Request cooperative stop for the background task.",
-    inputSchema: objectSchema({}),
+    description: "Request cooperative stop for a background task. Pass task_id when multiple tasks are running.",
+    inputSchema: objectSchema({
+      task_id: { type: "string", description: "Optional task_id returned by start_task." },
+    }, []),
   },
 ]
 
@@ -103,6 +138,13 @@ const toolNames = new Set(tools.map((tool) => tool.name))
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
 let worker: WorkerClient | undefined
+
+class WorkerConnectionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "WorkerConnectionError"
+  }
+}
 
 class WorkerClient {
   private process: Bun.Subprocess<"pipe", "pipe", "pipe">
@@ -124,6 +166,9 @@ class WorkerClient {
     })
     void this.readStdout()
     void this.readStderr()
+    void this.process.exited.then((code) => {
+      this.rejectPending(new WorkerConnectionError(`KSP worker exited with code ${code}`))
+    })
   }
 
   async call(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -132,7 +177,14 @@ class WorkerClient {
     const promise = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
     })
-    this.process.stdin.write(JSON.stringify(request) + "\n")
+    try {
+      this.process.stdin.write(JSON.stringify(request) + "\n")
+    } catch (error) {
+      this.pending.delete(id)
+      throw new WorkerConnectionError(
+        `could not send request to KSP worker: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     return promise
   }
 
@@ -185,6 +237,13 @@ class WorkerClient {
     } else {
       pending.resolve(response.result)
     }
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) {
+      pending.reject(error)
+    }
+    this.pending.clear()
   }
 }
 
@@ -263,7 +322,15 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
   }
   if (!isObject(args)) throw new Error("tool arguments must be an object")
   worker ??= new WorkerClient()
-  const result = await worker.call(name, args)
+  let result: unknown
+  try {
+    result = await worker.call(name, args)
+  } catch (error) {
+    if (!(error instanceof WorkerConnectionError)) throw error
+    process.stderr.write(`ksp worker disconnected; restarting and retrying ${name}\n`)
+    worker = new WorkerClient()
+    result = await worker.call(name, args)
+  }
   const text = JSON.stringify(result, null, 2)
   return {
     content: [{ type: "text", text }],
