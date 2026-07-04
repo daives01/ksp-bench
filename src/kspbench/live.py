@@ -18,31 +18,34 @@ from kspbench.krpc_client import KRPCController
 from kspbench.telemetry import TelemetrySample
 
 
-class KRPCExecutionError(RuntimeError):
-    """Raised when an executeKRPC snippet is rejected or fails."""
+class FlightToolError(RuntimeError):
+    """Raised when an agent tool call is rejected or fails."""
 
 
-class KRPCExecutionTimeout(KRPCExecutionError):
-    """Raised when an executeKRPC snippet exceeds its wall-clock budget."""
+class PythonExecutionTimeout(FlightToolError):
+    """Raised when an agent Python snippet exceeds its wall-clock budget."""
 
 
-class KSPRunTerminated(RuntimeError):
+class FlightTerminated(FlightToolError):
     """Raised when the active vessel can no longer continue the benchmark."""
 
 
-class AtmosphericWaitDisallowed(KRPCExecutionError):
+class AtmosphericWaitDisallowed(FlightToolError):
     """Raised when an agent tries to wait too long while flying in atmosphere."""
 
 
+class TaskStopped(FlightToolError):
+    """Raised when a background task observes a cooperative stop request."""
+
+
 @dataclass
-class AsyncScript:
-    script_id: str
+class ControlTask:
+    task_id: str
     code: str
     timeout_s: float
     started_monotonic: float
     status: str = "running"
     stdout: str = ""
-    lock_wait_s: float = 0.0
     result: Any = None
     error_type: str | None = None
     error: str | None = None
@@ -51,12 +54,8 @@ class AsyncScript:
     thread: threading.Thread | None = field(default=None, repr=False)
 
 
-class AsyncScriptStopped(KRPCExecutionError):
-    """Raised when an async script observes a cooperative stop request."""
-
-
-class LiveKRPCTools:
-    """Agent-facing tools for closed-loop kRPC control."""
+class FlightSession:
+    """Small agent-facing control surface for a live KSP benchmark run."""
 
     def __init__(
         self,
@@ -64,78 +63,261 @@ class LiveKRPCTools:
         controller: KRPCController,
         scenario: Scenario,
         artifacts: RunArtifacts,
-        execution_timeout_s: float = 30.0,
-        max_sleep_s: float = 240.0,
-        max_atmospheric_sleep_s: float = 2.0,
+        python_timeout_s: float = 15.0,
+        task_timeout_s: float = 180.0,
+        max_wait_s: float = 240.0,
+        max_atmospheric_wait_s: float = 2.0,
         poll_interval_s: float = 0.5,
-        warp_threshold_s: float = 10.0,
-        time_warp: bool = True,
         live_events: bool = False,
+        execution_timeout_s: float | None = None,
+        max_sleep_s: float | None = None,
+        max_atmospheric_sleep_s: float | None = None,
+        task_controller_factory: Callable[[], KRPCController] | None = None,
+        **_unused: Any,
     ) -> None:
         self.controller = controller
         self.scenario = scenario
         self.artifacts = artifacts
-        self.execution_timeout_s = execution_timeout_s
-        self.max_sleep_s = max_sleep_s
-        self.max_atmospheric_sleep_s = max_atmospheric_sleep_s
+        self.python_timeout_s = execution_timeout_s or python_timeout_s
+        self.task_timeout_s = task_timeout_s
+        self.max_wait_s = max_sleep_s or max_wait_s
+        self.max_atmospheric_wait_s = max_atmospheric_sleep_s or max_atmospheric_wait_s
         self.poll_interval_s = poll_interval_s
-        self.warp_threshold_s = warp_threshold_s
-        self.time_warp = time_warp
         self.live_events = live_events
         self.telemetry: list[TelemetrySample] = []
         self.actions: list[dict[str, Any]] = []
         self.invalid_actions = 0
         self.terminated = False
         self.termination_reason: str | None = None
-        self._scope: dict[str, Any] = {}
-        self._async_scripts: dict[str, AsyncScript] = {}
-        self._async_lock = threading.Lock()
         self._krpc_lock = threading.RLock()
-        self._next_async_script_id = 1
+        self._task_lock = threading.Lock()
+        self._task: ControlTask | None = None
+        self._task_controller_factory = task_controller_factory or (
+            lambda: KRPCController.connect(scenario)
+        )
+        self._next_task_id = 1
         self._orbit_diverged = False
+        self._initial_propellant: float | None = None
+
+    @property
+    def krpc_lock(self) -> Any:
+        return self._krpc_lock
+
+    def observe(self) -> dict[str, Any]:
+        started = time.monotonic()
+        action: dict[str, Any] = {
+            "type": "observe",
+            "mission_elapsed_s": self._latest_mission_elapsed_s(),
+        }
+        try:
+            with self._krpc_lock:
+                sample = self._read_telemetry_or_terminate(self.controller)
+                vehicle = self.controller.read_vehicle_state()
+            payload = {
+                "telemetry": sample.to_dict(),
+                "vehicle": vehicle,
+                "target_orbit": {
+                    "apoapsis_min_m": self.scenario.target_orbit.apoapsis_min_m,
+                    "apoapsis_max_m": self.scenario.target_orbit.apoapsis_max_m,
+                    "periapsis_min_m": self.scenario.target_orbit.periapsis_min_m,
+                },
+                "terminated": self.terminated,
+                "termination_reason": self.termination_reason,
+            }
+            result = {"ok": True, **payload}
+            action.update(result)
+            action["mission_elapsed_s"] = sample.mission_elapsed_s
+            return result
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            result = self._failure(exc, started=started)
+            action.update(result)
+            return result
+        finally:
+            self._append_action(action)
+
+    def set_throttle(self, value: float) -> dict[str, Any]:
+        value = max(0.0, min(1.0, float(value)))
+
+        def apply() -> dict[str, Any]:
+            self.controller.vessel.control.throttle = value
+            return {"throttle": value}
+
+        return self._command("set_throttle", apply, throttle=value)
+
+    def stage(self) -> dict[str, Any]:
+        def apply() -> dict[str, Any]:
+            parts = self.controller.vessel.control.activate_next_stage()
+            return {"activated_parts": len(parts) if parts is not None else None}
+
+        return self._command("stage", apply)
+
+    def set_pitch_heading(self, pitch: float, heading: float) -> dict[str, Any]:
+        pitch = float(pitch)
+        heading = float(heading)
+
+        def apply() -> dict[str, Any]:
+            autopilot = self.controller.vessel.auto_pilot
+            autopilot.engage()
+            autopilot.target_pitch_and_heading(pitch, heading)
+            return {"pitch": pitch, "heading": heading}
+
+        return self._command("set_pitch_heading", apply, pitch=pitch, heading=heading)
+
+    def hold_prograde(self, reference_frame: str = "orbital") -> dict[str, Any]:
+        def apply() -> dict[str, Any]:
+            vessel = self.controller.vessel
+            frame = _reference_frame(vessel, reference_frame)
+            flight = vessel.flight(frame)
+            autopilot = vessel.auto_pilot
+            autopilot.reference_frame = frame
+            autopilot.target_direction = flight.prograde
+            autopilot.engage()
+            return {"reference_frame": reference_frame, "target_direction": flight.prograde}
+
+        return self._command("hold_prograde", apply, reference_frame=reference_frame)
+
+    def wait(self, seconds: float) -> dict[str, Any]:
+        started = time.monotonic()
+        action: dict[str, Any] = {
+            "type": "wait",
+            "seconds": float(seconds),
+            "mission_elapsed_s": self._latest_mission_elapsed_s(),
+        }
+        try:
+            self._raise_if_terminated()
+            self._sleep(float(seconds), controller=self.controller)
+            telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
+            result = {
+                "ok": True,
+                "duration_s": round(time.monotonic() - started, 3),
+                "telemetry": telemetry,
+            }
+            action.update(result)
+            return result
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            result = self._failure(exc, started=started)
+            action.update(result)
+            return result
+        finally:
+            self._append_action(action)
+
+    def execute_python(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
+        started = time.monotonic()
+        budget_s = self._timeout(timeout_s, default=self.python_timeout_s)
+        action: dict[str, Any] = {
+            "type": "execute_python",
+            "mission_elapsed_s": self._latest_mission_elapsed_s(),
+            "timeout_s": budget_s,
+            "code": code,
+        }
+        stdout = io.StringIO()
+        try:
+            self._raise_if_terminated()
+            self._validate_code(code)
+            scope = self._execution_scope(controller=self.controller)
+            if not self._krpc_lock.acquire(timeout=budget_s):
+                raise PythonExecutionTimeout(f"python execution exceeded {budget_s:.3f}s")
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    self._exec_with_timeout(code, scope, budget_s)
+                    self._read_telemetry_or_terminate(self.controller)
+            finally:
+                self._krpc_lock.release()
+            result = {
+                "ok": True,
+                "duration_s": round(time.monotonic() - started, 3),
+                "stdout": _truncate(stdout.getvalue()),
+                "result": _jsonable(scope.get("result")),
+            }
+            action.update(result)
+            return result
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            result = self._failure(exc, started=started, stdout=stdout.getvalue())
+            action.update(result)
+            return result
+        finally:
+            self._append_action(action)
+
+    def start_task(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
+        budget_s = self._timeout(timeout_s, default=self.task_timeout_s)
+        started = time.monotonic()
+        action: dict[str, Any] = {
+            "type": "start_task",
+            "mission_elapsed_s": self._latest_mission_elapsed_s(),
+            "timeout_s": budget_s,
+            "code": code,
+        }
+        try:
+            self._raise_if_terminated()
+            self._validate_code(code)
+            with self._task_lock:
+                if self._task and self._task.status == "running":
+                    raise FlightToolError(
+                        f"task {self._task.task_id} is already running; stop it first"
+                    )
+                task_id = f"task-{self._next_task_id}"
+                self._next_task_id += 1
+                task = ControlTask(
+                    task_id=task_id,
+                    code=code,
+                    timeout_s=budget_s,
+                    started_monotonic=time.monotonic(),
+                )
+                self._task = task
+            thread = threading.Thread(
+                target=self._run_task,
+                args=(task,),
+                name="kspbench-control-task",
+                daemon=True,
+            )
+            task.thread = thread
+            thread.start()
+            result = {"ok": True, "task_id": task.task_id, "status": task.status}
+            action.update(result)
+            return result
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            result = self._failure(exc, started=started)
+            action.update(result)
+            return result
+        finally:
+            self._append_action(action)
+
+    def check_task(self) -> dict[str, Any]:
+        with self._task_lock:
+            status = self._task_status(self._task) if self._task else None
+        latest_telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
+        self._record_action("check_task", ok=True)
+        return {"ok": True, "task": status, "latest_telemetry": latest_telemetry}
+
+    def stop_task(self) -> dict[str, Any]:
+        with self._task_lock:
+            if self._task is None:
+                status = None
+            else:
+                if self._task.status == "running":
+                    self._task.stop_requested = True
+                status = self._task_status(self._task)
+        self._record_action("stop_task", ok=True)
+        return {"ok": True, "task": status}
 
     def getTelemetry(self) -> dict[str, Any]:
-        return self.get_telemetry()
-
-    def get_telemetry(self) -> dict[str, Any]:
-        with self._krpc_lock:
-            sample = self.controller.read_telemetry()
-            self.record_telemetry(sample)
-            payload = sample.to_dict()
-            self._emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "getTelemetry",
-                    "mission_elapsed_s": sample.mission_elapsed_s,
-                }
-            )
-            return payload
+        return self.observe()["telemetry"]
 
     def getVehicleState(self) -> dict[str, Any]:
-        return self.get_vehicle_state()
-
-    def get_vehicle_state(self) -> dict[str, Any]:
-        with self._krpc_lock:
-            state = self.controller.read_vehicle_state()
-            self._emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "getVehicleState",
-                    "mission_elapsed_s": self._latest_mission_elapsed_s(),
-                }
-            )
-            return state
+        return self.observe()["vehicle"]
 
     def getOrbitState(self) -> dict[str, Any]:
-        return self.get_orbit_state()
-
-    def get_orbit_state(self) -> dict[str, Any]:
-        with self._krpc_lock:
-            sample = self.controller.read_telemetry()
-            self.record_telemetry(sample)
-        payload = sample.to_dict()
+        telemetry = self.getTelemetry()
         return {
-            key: payload[key]
+            key: telemetry[key]
             for key in (
                 "mission_elapsed_s",
                 "altitude_m",
@@ -156,336 +338,34 @@ class LiveKRPCTools:
         }
 
     def executeKRPC(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
-        return self.execute_krpc(code, timeout_s=timeout_s)
+        return self.execute_python(code, timeout_s=timeout_s)
 
     def executeKRPCAsync(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
-        return self.execute_krpc_async(code, timeout_s=timeout_s)
+        result = self.start_task(code, timeout_s=timeout_s)
+        if result.get("ok"):
+            result["script_id"] = result["task_id"]
+        return result
 
     def checkAsync(self, script_id: str | None = None) -> dict[str, Any]:
-        return self.check_async(script_id)
+        result = self.check_task()
+        task = result.pop("task")
+        if script_id is not None and task is not None and script_id != task.get("task_id"):
+            return {"ok": False, "error": f"unknown script_id: {script_id}"}
+        return {"ok": True, "script": task, "latest_telemetry": result["latest_telemetry"]}
 
     def killAsync(self, script_id: str) -> dict[str, Any]:
-        return self.kill_async(script_id)
-
-    @property
-    def krpc_lock(self) -> Any:
-        return self._krpc_lock
-
-    def execute_krpc(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
-        budget_s = self._execution_budget(timeout_s)
-        action: dict[str, Any] = {
-            "index": len(self.actions),
-            "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            "type": "execute_krpc",
-            "allowed": True,
-            "timeout_s": budget_s,
-            "code": code,
-        }
-        if self.terminated:
-            action.update(
-                {
-                    "allowed": False,
-                    "ok": False,
-                    "duration_s": 0.0,
-                    "error_type": "KSPRunTerminated",
-                    "error": self.termination_reason or "run already terminated",
-                }
-            )
-            self.invalid_actions += 1
-            self.actions.append(action)
-            self.artifacts.append_action(action)
-            self._emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "executeKRPC",
-                    "ok": False,
-                    "mission_elapsed_s": self._latest_mission_elapsed_s(),
-                }
-            )
-            return {
-                "ok": False,
-                "duration_s": 0.0,
-                "error_type": action["error_type"],
-                "error": action["error"],
-            }
-        started = time.monotonic()
-        stdout = io.StringIO()
-        lock_wait_s = 0.0
-        acquired_lock = False
-        try:
-            self._validate_code(code)
-            scope = self._execution_scope()
-            acquired_lock, lock_wait_s = self._acquire_krpc_lock(budget_s)
-            if not acquired_lock:
-                raise KRPCExecutionTimeout(
-                    f"executeKRPC exceeded {budget_s:.3f}s waiting for kRPC"
-                )
-            remaining_s = max(0.001, budget_s - lock_wait_s)
-            with contextlib.redirect_stdout(stdout):
-                self._exec_with_timeout(code, scope, remaining_s)
-            result = {
-                "ok": True,
-                "duration_s": round(time.monotonic() - started, 3),
-                "lock_wait_s": round(lock_wait_s, 3),
-                "stdout": _truncate(stdout.getvalue()),
-                "result": _jsonable(scope.get("result")),
-            }
-            action.update(result)
-            return result
-        except Exception as exc:
-            self.invalid_actions += 1
-            if isinstance(exc, KRPCExecutionTimeout):
-                self._emit_event(
-                    {
-                        "type": "execute_krpc_timeout",
-                        "reason": "execute_krpc_timeout",
-                        "detail": str(exc),
-                        "mission_elapsed_s": self._latest_mission_elapsed_s(),
-                    }
-                )
-            result = {
-                "ok": False,
-                "duration_s": round(time.monotonic() - started, 3),
-                "lock_wait_s": round(lock_wait_s, 3),
-                "stdout": _truncate(stdout.getvalue()),
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-            action.update(result)
-            return result
-        finally:
-            if acquired_lock:
-                self._krpc_lock.release()
-            self.actions.append(action)
-            self.artifacts.append_action(action)
-            self._emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "executeKRPC",
-                    "ok": action.get("ok", False),
-                    "mission_elapsed_s": self._latest_mission_elapsed_s(),
-                }
-            )
-            if action.get("error_type") != "KRPCExecutionTimeout":
-                try:
-                    with self._krpc_lock:
-                        self.record_telemetry(self.controller.read_telemetry())
-                except Exception as exc:
-                    self._emit_event(
-                        {
-                            "type": "telemetry_read_failed",
-                            "tool": "executeKRPC",
-                            "error": str(exc),
-                        }
-                    )
-
-    def execute_krpc_async(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
-        budget_s = self._execution_budget(timeout_s)
-        try:
-            self._validate_code(code)
-        except Exception as exc:
-            self.invalid_actions += 1
-            return {
-                "ok": False,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-
-        with self._async_lock:
-            script_id = f"script-{self._next_async_script_id}"
-            self._next_async_script_id += 1
-            script = AsyncScript(
-                script_id=script_id,
-                code=code,
-                timeout_s=budget_s,
-                started_monotonic=time.monotonic(),
-            )
-            self._async_scripts[script_id] = script
-
-        action: dict[str, Any] = {
-            "index": len(self.actions),
-            "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            "type": "execute_krpc_async",
-            "allowed": True,
-            "script_id": script_id,
-            "timeout_s": budget_s,
-            "code": code,
-            "ok": True,
-        }
-        self.actions.append(action)
-        self.artifacts.append_action(action)
-        thread = threading.Thread(
-            target=self._run_async_script,
-            args=(script,),
-            name=f"kspbench-{script_id}",
-            daemon=True,
-        )
-        script.thread = thread
-        thread.start()
-        self._emit_event(
-            {
-                "type": "tool_call",
-                "tool": "executeKRPCAsync",
-                "ok": True,
-                "script_id": script_id,
-                "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            }
-        )
-        return {
-            "ok": True,
-            "script_id": script_id,
-            "status": script.status,
-            "timeout_s": budget_s,
-        }
-
-    def check_async(self, script_id: str | None = None) -> dict[str, Any]:
-        with self._async_lock:
-            scripts = list(self._async_scripts.values())
-            if script_id is not None:
-                script = self._async_scripts.get(script_id)
-                if script is None:
-                    return {"ok": False, "error": f"unknown script_id: {script_id}"}
-                payload = {"script": self._async_status(script)}
-            else:
-                payload = {"scripts": [self._async_status(script) for script in scripts]}
-            latest_telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
-            payload["latest_telemetry"] = latest_telemetry
-        self._emit_event(
-            {
-                "type": "tool_call",
-                "tool": "checkAsync",
-                "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            }
-        )
-        return {"ok": True, **payload}
-
-    def kill_async(self, script_id: str) -> dict[str, Any]:
-        with self._async_lock:
-            script = self._async_scripts.get(script_id)
-            if script is None:
-                return {"ok": False, "error": f"unknown script_id: {script_id}"}
-            if script.status == "running":
-                script.stop_requested = True
-                status = "stop_requested"
-            else:
-                status = script.status
-            payload = self._async_status(script)
-        self._emit_event(
-            {
-                "type": "tool_call",
-                "tool": "killAsync",
-                "script_id": script_id,
-                "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            }
-        )
-        return {"ok": True, "status": status, "script": payload}
-
-    def _run_async_script(self, script: AsyncScript) -> None:
-        stdout_chunks: list[str] = []
-
-        def async_print(*values: Any, sep: str = " ", end: str = "\n") -> None:
-            stdout_chunks.append(sep.join(str(value) for value in values) + end)
-            with self._async_lock:
-                script.stdout = _truncate_tail("".join(stdout_chunks))
-
-        def raise_if_stopped() -> None:
-            if script.stop_requested:
-                raise AsyncScriptStopped(f"{script.script_id} stopped")
-
-        def async_sleep(seconds: float, *, poll_interval_s: float | None = None) -> None:
-            interval = poll_interval_s or self.poll_interval_s
-            deadline = time.monotonic() + seconds
-            while True:
-                raise_if_stopped()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                self.sleep(min(interval, remaining), poll_interval_s=interval)
-
-        def async_wait_until(
-            condition: Callable[[], bool],
-            *,
-            timeout_s: float,
-            poll_interval_s: float | None = None,
-        ) -> bool:
-            interval = poll_interval_s or self.poll_interval_s
-            deadline = time.monotonic() + timeout_s
-            while True:
-                raise_if_stopped()
-                if condition():
-                    return True
-                if time.monotonic() >= deadline:
-                    return False
-                async_sleep(min(interval, deadline - time.monotonic()), poll_interval_s=interval)
-
-        scope = self._execution_scope(
-            extra={
-                "sleep": async_sleep,
-                "wait": async_sleep,
-                "wait_until": async_wait_until,
-                "should_stop": lambda: script.stop_requested,
-            }
-        )
-        scope["__builtins__"] = {**_safe_builtins(), "print": async_print}
-        acquired_lock = False
-        try:
-            acquired_lock, lock_wait_s = self._acquire_krpc_lock(script.timeout_s)
-            with self._async_lock:
-                script.lock_wait_s = lock_wait_s
-            if not acquired_lock:
-                raise KRPCExecutionTimeout(
-                    f"executeKRPC exceeded {script.timeout_s:.3f}s waiting for kRPC"
-                )
-            remaining_s = max(0.001, script.timeout_s - lock_wait_s)
-            self._exec_with_trace_timeout(script.code, scope, remaining_s, script=script)
-            with self._async_lock:
-                script.status = "done"
-                script.result = _jsonable(scope.get("result"))
-        except Exception as exc:
-            with self._async_lock:
-                script.status = "stopped" if isinstance(exc, AsyncScriptStopped) else "failed"
-                script.error_type = type(exc).__name__
-                script.error = str(exc)
-            if not isinstance(exc, AsyncScriptStopped):
-                self.invalid_actions += 1
-        finally:
-            if acquired_lock:
-                self._krpc_lock.release()
-            with self._async_lock:
-                script.stdout = _truncate_tail("".join(stdout_chunks))
-                script.finished_monotonic = time.monotonic()
-                self.artifacts.append_event(
-                    {
-                        "type": "async_script_finished",
-                        "script_id": script.script_id,
-                        "status": script.status,
-                        "error_type": script.error_type,
-                        "error": script.error,
-                    }
-                )
-
-    def _async_status(self, script: AsyncScript) -> dict[str, Any]:
-        now = time.monotonic()
-        finished = script.finished_monotonic
-        elapsed_s = (finished if finished is not None else now) - script.started_monotonic
-        return {
-            "script_id": script.script_id,
-            "status": script.status,
-            "running": script.status == "running",
-            "stop_requested": script.stop_requested,
-            "elapsed_s": round(elapsed_s, 3),
-            "timeout_s": script.timeout_s,
-            "lock_wait_s": round(script.lock_wait_s, 3),
-            "stdout": script.stdout,
-            "result": _jsonable(script.result),
-            "error_type": script.error_type,
-            "error": script.error,
-        }
+        current = self.check_task().get("task")
+        if current is None or script_id != current.get("task_id"):
+            return {"ok": False, "error": f"unknown script_id: {script_id}"}
+        result = self.stop_task()
+        return {"ok": True, "status": "stop_requested", "script": result["task"]}
 
     def record_telemetry(self, sample: TelemetrySample) -> None:
         self.telemetry.append(sample)
+        propellant = _sample_propellant(sample)
+        if self._initial_propellant is None:
+            self._initial_propellant = propellant
         if self._orbit_has_diverged(sample):
-            self._orbit_diverged = True
             self._emit_event(
                 {
                     "type": "orbit_target_diverged",
@@ -497,196 +377,136 @@ class LiveKRPCTools:
                 }
             )
         reason = self._terminal_reason(sample)
-        if reason and not self.terminated:
-            self.terminated = True
-            self.termination_reason = reason
-            self._emit_event(
-                {
-                    "type": "run_terminated",
-                    "reason": reason,
-                    "mission_elapsed_s": sample.mission_elapsed_s,
-                }
-            )
+        if reason:
+            self._terminate(reason, mission_elapsed_s=sample.mission_elapsed_s)
 
-    def _raise_if_terminated(self) -> None:
-        if self.terminated:
-            raise KSPRunTerminated(self.termination_reason or "run terminated")
-
-    def wait(self, seconds: float, *, poll_interval_s: float | None = None) -> dict[str, Any]:
+    def _command(
+        self,
+        name: str,
+        apply: Callable[[], dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
         started = time.monotonic()
         action: dict[str, Any] = {
-            "index": len(self.actions),
+            "type": name,
             "mission_elapsed_s": self._latest_mission_elapsed_s(),
-            "type": "wait",
-            "allowed": True,
-            "seconds": float(seconds),
-            "time_warp_requested": self.time_warp and seconds >= self.warp_threshold_s,
+            **params,
         }
         try:
             self._raise_if_terminated()
-            if seconds < 0:
-                raise ValueError("wait seconds must be non-negative")
-            if seconds > self.max_sleep_s:
-                raise ValueError(f"wait seconds exceeds max_sleep_s={self.max_sleep_s}")
-            self._raise_if_atmospheric_wait(seconds, "wait")
-            warped = False
-            if self.time_warp and seconds >= self.warp_threshold_s:
-                warped = self._time_warp(seconds)
-            if not warped:
-                self._polling_sleep(seconds, poll_interval_s=poll_interval_s)
-            try:
-                with self._krpc_lock:
-                    self.record_telemetry(self.controller.read_telemetry())
-                self._raise_if_terminated()
-            except KSPRunTerminated:
-                raise
-            except Exception as exc:
-                self._emit_event(
-                    {"type": "telemetry_read_failed", "tool": "wait", "error": str(exc)}
-                )
-            action.update(
-                {
-                    "ok": True,
-                    "duration_s": round(time.monotonic() - started, 3),
-                    "time_warp_used": warped,
-                }
-            )
-            return {
-                "ok": True,
-                "duration_s": action["duration_s"],
-                "time_warp_used": warped,
-                "telemetry": self.telemetry[-1].to_dict() if self.telemetry else None,
-            }
+            with self._krpc_lock:
+                payload = apply()
+                sample = self._read_telemetry_or_terminate(self.controller)
+            result = {"ok": True, **payload, "telemetry": sample.to_dict()}
+            action.update(result)
+            return result
         except Exception as exc:
-            self.invalid_actions += 1
-            action.update(
-                {
-                    "ok": False,
-                    "duration_s": round(time.monotonic() - started, 3),
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-            )
-            return {
-                "ok": False,
-                "duration_s": action["duration_s"],
-                "error_type": action["error_type"],
-                "error": action["error"],
-            }
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            result = self._failure(exc, started=started)
+            action.update(result)
+            return result
         finally:
-            self.actions.append(action)
-            self.artifacts.append_action(action)
-            self._emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "wait",
-                    "ok": action.get("ok", False),
-                    "seconds": float(seconds),
-                    "time_warp_used": action.get("time_warp_used", False),
-                    "mission_elapsed_s": self._latest_mission_elapsed_s(),
-                }
-            )
+            self._append_action(action)
 
-    def _execution_scope(self, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        scope = {} if extra is not None else self._scope
-        if not scope:
-            scope = {
-                "__builtins__": _safe_builtins(),
-                "math": math,
-                "sleep": self.sleep,
-                "wait": self.sleep,
-                "wait_until": self.wait_until,
-                "getTelemetry": self.getTelemetry,
-                "getVehicleState": self.getVehicleState,
-                "getOrbitState": self.getOrbitState,
-            }
-            if extra is None:
-                self._scope = scope
-        scope.update(
-            {
-                "conn": self.controller.conn,
-                "space_center": self.controller.conn.space_center,
-                "vessel": self.controller.vessel,
-            }
-        )
-        if extra:
-            scope.update(extra)
-        return scope
+    def _run_task(self, task: ControlTask) -> None:
+        stdout_chunks: list[str] = []
+        task_controller: KRPCController | None = None
 
-    def sleep(self, seconds: float, *, poll_interval_s: float | None = None) -> None:
-        self._raise_if_terminated()
-        if seconds < 0:
-            raise ValueError("sleep seconds must be non-negative")
-        if seconds > self.max_sleep_s:
-            raise ValueError(f"sleep seconds exceeds max_sleep_s={self.max_sleep_s}")
-        self._raise_if_atmospheric_wait(seconds, "sleep")
-        if self.time_warp and seconds >= self.warp_threshold_s and self._time_warp(seconds):
-            with self._krpc_lock:
-                self.record_telemetry(self.controller.read_telemetry())
-            self._raise_if_terminated()
-            return
-        self._polling_sleep(seconds, poll_interval_s=poll_interval_s)
+        def task_print(*values: Any, sep: str = " ", end: str = "\n") -> None:
+            stdout_chunks.append(sep.join(str(value) for value in values) + end)
+            with self._task_lock:
+                task.stdout = _truncate_tail("".join(stdout_chunks))
 
-    def _raise_if_atmospheric_wait(self, seconds: float, helper: str) -> None:
-        if seconds <= self.max_atmospheric_sleep_s or not self._in_atmosphere():
-            return
-        raise AtmosphericWaitDisallowed(
-            f"{helper}({seconds:g}) is disabled in atmosphere; use short control-loop "
-            f"sleeps <= {self.max_atmospheric_sleep_s:g}s and re-check telemetry"
-        )
+        def should_stop() -> bool:
+            return task.stop_requested
 
-    def _polling_sleep(self, seconds: float, *, poll_interval_s: float | None = None) -> None:
-        deadline = time.monotonic() + seconds
-        interval = poll_interval_s or self.poll_interval_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            time.sleep(min(interval, remaining))
-            with self._krpc_lock:
-                self.record_telemetry(self.controller.read_telemetry())
-            self._raise_if_terminated()
+        def task_sleep(seconds: float) -> None:
+            if task_controller is None:
+                raise FlightToolError("background task controller is not initialized")
+            self._sleep(float(seconds), controller=task_controller, should_stop=should_stop)
 
-    def _time_warp(self, seconds: float) -> bool:
         try:
-            if self._in_atmosphere():
-                self._emit_event(
+            task_controller = self._task_controller_factory()
+            scope = self._execution_scope(
+                controller=task_controller,
+                extra={
+                    "sleep": task_sleep,
+                    "wait": task_sleep,
+                    "should_stop": should_stop,
+                    "__builtins__": {**_safe_builtins(), "print": task_print},
+                },
+            )
+            self._exec_with_trace_timeout(task.code, scope, task.timeout_s, task=task)
+            self._read_telemetry_or_terminate(task_controller)
+            with self._task_lock:
+                task.status = "done"
+                task.result = _jsonable(scope.get("result"))
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                exc = FlightTerminated(self.termination_reason or "run terminated")
+            with self._task_lock:
+                task.status = "stopped" if isinstance(exc, TaskStopped) else "failed"
+                task.error_type = type(exc).__name__
+                task.error = str(exc)
+            if not isinstance(exc, TaskStopped):
+                self.invalid_actions += 1
+        finally:
+            if task_controller is not None:
+                task_controller.close()
+            with self._task_lock:
+                task.stdout = _truncate_tail("".join(stdout_chunks))
+                task.finished_monotonic = time.monotonic()
+                self.artifacts.append_event(
                     {
-                        "type": "time_warp_skipped",
-                        "seconds": float(seconds),
-                        "reason": "in_atmosphere",
+                        "type": "control_task_finished",
+                        "task_id": task.task_id,
+                        "status": task.status,
+                        "error_type": task.error_type,
+                        "error": task.error,
                     }
                 )
-                return False
-            with self._krpc_lock:
-                space_center = self.controller.conn.space_center
-                start_ut = float(space_center.ut)
-                space_center.warp_to(
-                    start_ut + seconds,
-                    max_rails_rate=100000,
-                    max_physics_rate=4,
-                )
-            return True
-        except Exception as exc:
-            self._emit_event(
-                {
-                    "type": "time_warp_failed",
-                    "seconds": float(seconds),
-                    "error": str(exc),
-                }
-            )
-            return False
 
-    def _in_atmosphere(self) -> bool:
-        if self.telemetry:
-            sample = self.telemetry[-1]
-        else:
-            with self._krpc_lock:
-                sample = self.controller.read_telemetry()
-                self.record_telemetry(sample)
+    def _sleep(
+        self,
+        seconds: float,
+        *,
+        controller: KRPCController,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        if seconds < 0:
+            raise ValueError("wait seconds must be non-negative")
+        if seconds > self.max_wait_s:
+            raise ValueError(f"wait seconds exceeds max_wait_s={self.max_wait_s}")
+        self._raise_if_atmospheric_wait(seconds, controller=controller)
+        start_met = self._latest_mission_elapsed_s()
+        target_met = start_met + seconds
+        self._maybe_time_warp_to(target_met, controller=controller)
+        while True:
+            if should_stop and should_stop():
+                raise TaskStopped("control task stopped")
+            current_met = self._latest_mission_elapsed_s()
+            remaining_met = target_met - current_met
+            if remaining_met <= 0:
+                return
+            time.sleep(min(self.poll_interval_s, remaining_met))
+            self._read_telemetry_or_terminate(controller)
+            self._raise_if_terminated()
+
+    def _raise_if_atmospheric_wait(self, seconds: float, *, controller: KRPCController) -> None:
+        if seconds <= self.max_atmospheric_wait_s or not self._in_atmosphere(controller):
+            return
+        raise AtmosphericWaitDisallowed(
+            f"wait({seconds:g}) is disabled in atmosphere; use waits <= "
+            f"{self.max_atmospheric_wait_s:g}s and re-check telemetry"
+        )
+
+    def _in_atmosphere(self, controller: KRPCController) -> bool:
+        sample = self.telemetry[-1] if self.telemetry else self._read_telemetry_or_terminate(
+            controller
+        )
         try:
-            with self._krpc_lock:
-                atmosphere_depth = float(self.controller.vessel.orbit.body.atmosphere_depth)
+            atmosphere_depth = float(controller.vessel.orbit.body.atmosphere_depth)
         except Exception:
             atmosphere_depth = 0.0
         return atmosphere_depth > 0.0 and sample.altitude_m < atmosphere_depth
@@ -696,71 +516,250 @@ class LiveKRPCTools:
             return "vessel_not_intact"
         if not sample.controllable:
             return "vessel_not_controllable"
-        terminal_situations = {"crashed", "destroyed", "dead"}
-        situation = sample.situation.lower()
-        if situation in terminal_situations:
-            return f"vessel_{situation}"
+        if sample.situation.lower() in {"crashed", "destroyed", "dead"}:
+            return f"vessel_{sample.situation.lower()}"
+        if self._landed_after_wasting_propellant(sample):
+            return "vessel_landed_burning_fuel"
         return None
 
+    def _landed_after_wasting_propellant(self, sample: TelemetrySample) -> bool:
+        if sample.situation.lower() != "landed" or sample.mission_elapsed_s < 10.0:
+            return False
+        if sample.surface_altitude_m > 100.0 or sample.surface_speed_m_s > 1.0:
+            return False
+        initial_propellant = self._initial_propellant
+        if initial_propellant is None:
+            return False
+        propellant_spent = initial_propellant - _sample_propellant(sample)
+        if propellant_spent < 100.0:
+            return False
+        try:
+            throttle = float(self.controller.vessel.control.throttle)
+        except Exception:
+            throttle = 0.0
+        return throttle > 0.1
+
+    def _maybe_time_warp_to(self, target_met: float, *, controller: KRPCController) -> None:
+        if self._in_atmosphere(controller) or not self.telemetry:
+            return
+        current_met = self._latest_mission_elapsed_s()
+        remaining_met = target_met - current_met
+        if remaining_met < max(10.0, self.poll_interval_s * 4.0):
+            return
+        space_center = controller.conn.space_center
+        warp_to = getattr(space_center, "warp_to", None)
+        if not callable(warp_to):
+            return
+        try:
+            current_ut = float(space_center.ut)
+        except Exception:
+            return
+        undershoot_s = min(5.0, max(2.0, remaining_met * 0.1))
+        warp_duration_s = max(0.0, remaining_met - undershoot_s)
+        if warp_duration_s <= 0.0:
+            return
+        warp_to(
+            current_ut + warp_duration_s,
+            max_rails_rate=1000,
+            max_physics_rate=4,
+        )
+        self._read_telemetry_or_terminate(controller)
+
+    def _read_telemetry_or_terminate(self, controller: KRPCController) -> TelemetrySample:
+        try:
+            sample = controller.read_telemetry()
+        except Exception as exc:
+            if self._terminate_for_controller_error(exc):
+                self._raise_if_terminated()
+            raise
+        self.record_telemetry(sample)
+        return sample
+
+    def _terminate_for_controller_error(self, exc: Exception) -> bool:
+        message = str(exc)
+        if "Instance not found" not in message:
+            return False
+        self._terminate(
+            "vessel_lost",
+            detail=message,
+            error_type=type(exc).__name__,
+        )
+        return True
+
+    def _terminate(
+        self,
+        reason: str,
+        *,
+        mission_elapsed_s: float | None = None,
+        detail: str | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        if self.terminated:
+            return
+        self.terminated = True
+        self.termination_reason = reason
+        event: dict[str, Any] = {
+            "type": "run_terminated",
+            "reason": reason,
+            "mission_elapsed_s": (
+                self._latest_mission_elapsed_s()
+                if mission_elapsed_s is None
+                else mission_elapsed_s
+            ),
+        }
+        if error_type is not None:
+            event["error_type"] = error_type
+        if detail is not None:
+            event["detail"] = _truncate(detail)
+        self._emit_event(event)
+
     def _orbit_has_diverged(self, sample: TelemetrySample) -> bool:
-        return (
-            not self._orbit_diverged
-            and sample.apoapsis_m > self.scenario.target_orbit.apoapsis_max_m * 5
+        if self._orbit_diverged:
+            return False
+        diverged = (
+            sample.apoapsis_m > self.scenario.target_orbit.apoapsis_max_m * 5
             and sample.periapsis_m < self.scenario.target_orbit.periapsis_min_m
         )
+        self._orbit_diverged = diverged
+        return diverged
 
-    def wait_until(
-        self,
-        condition: Callable[[], bool],
-        *,
-        timeout_s: float,
-        poll_interval_s: float | None = None,
-    ) -> bool:
-        if timeout_s < 0:
-            raise ValueError("timeout_s must be non-negative")
-        if timeout_s > self.max_sleep_s:
-            raise ValueError(f"timeout_s exceeds max_sleep_s={self.max_sleep_s}")
-        self._raise_if_atmospheric_wait(timeout_s, "wait_until")
-        deadline = time.monotonic() + timeout_s
-        interval = poll_interval_s or self.poll_interval_s
-        while True:
-            if condition():
-                with self._krpc_lock:
-                    self.record_telemetry(self.controller.read_telemetry())
-                self._raise_if_terminated()
-                return True
-            if time.monotonic() >= deadline:
-                with self._krpc_lock:
-                    self.record_telemetry(self.controller.read_telemetry())
-                self._raise_if_terminated()
-                return False
-            time.sleep(interval)
-            with self._krpc_lock:
-                self.record_telemetry(self.controller.read_telemetry())
-            self._raise_if_terminated()
+    def _raise_if_terminated(self) -> None:
+        if self.terminated:
+            raise FlightTerminated(self.termination_reason or "run terminated")
 
-    def _execution_budget(self, requested_timeout_s: float | None) -> float:
-        budget = (
-            requested_timeout_s if requested_timeout_s is not None else self.execution_timeout_s
+    def _raise_if_task_running(self, tool_name: str) -> None:
+        with self._task_lock:
+            task = self._task
+            if task is None or task.status != "running":
+                return
+            if task.thread is threading.current_thread():
+                return
+            task_id = task.task_id
+        raise FlightToolError(
+            f"task {task_id} is running; use ksp_check_task or ksp_stop_task before "
+            f"calling {tool_name}"
         )
-        if budget <= 0:
-            raise ValueError("timeout_s must be positive")
-        return min(float(budget), self.max_sleep_s)
 
-    def _acquire_krpc_lock(self, timeout_s: float) -> tuple[bool, float]:
-        started = time.monotonic()
-        acquired = self._krpc_lock.acquire(timeout=timeout_s)
-        lock_wait_s = time.monotonic() - started
-        return acquired, lock_wait_s
+    def _execution_scope(
+        self,
+        *,
+        controller: KRPCController,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        def observe() -> dict[str, Any]:
+            return self._python_observe(controller)
+
+        def scoped_orbit_state() -> dict[str, Any]:
+            telemetry = observe()["telemetry"]
+            return {
+                key: telemetry[key]
+                for key in (
+                    "mission_elapsed_s",
+                    "altitude_m",
+                    "apoapsis_m",
+                    "periapsis_m",
+                    "time_to_apoapsis_s",
+                    "time_to_periapsis_s",
+                    "eccentricity",
+                    "inclination_deg",
+                    "orbital_speed_m_s",
+                    "liquid_fuel",
+                    "oxidizer",
+                    "stage",
+                    "situation",
+                    "controllable",
+                    "intact",
+                )
+            }
+
+        def scoped_throttle(value: float) -> dict[str, Any]:
+            controller.vessel.control.throttle = max(0.0, min(1.0, float(value)))
+            return {
+                "ok": True,
+                "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
+            }
+
+        def scoped_stage() -> dict[str, Any]:
+            parts = controller.vessel.control.activate_next_stage()
+            return {
+                "ok": True,
+                "activated_parts": len(parts) if parts is not None else None,
+                "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
+            }
+
+        def scoped_pitch_heading(pitch: float, heading: float) -> dict[str, Any]:
+            autopilot = controller.vessel.auto_pilot
+            autopilot.engage()
+            autopilot.target_pitch_and_heading(float(pitch), float(heading))
+            return {
+                "ok": True,
+                "pitch": float(pitch),
+                "heading": float(heading),
+                "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
+            }
+
+        def scoped_prograde(reference_frame: str = "orbital") -> dict[str, Any]:
+            vessel = controller.vessel
+            frame = _reference_frame(vessel, reference_frame)
+            flight = vessel.flight(frame)
+            autopilot = vessel.auto_pilot
+            autopilot.reference_frame = frame
+            autopilot.target_direction = flight.prograde
+            autopilot.engage()
+            return {
+                "ok": True,
+                "reference_frame": reference_frame,
+                "target_direction": flight.prograde,
+                "telemetry": self._read_telemetry_or_terminate(controller).to_dict(),
+            }
+
+        scope = {
+            "__builtins__": _safe_builtins(),
+            "math": math,
+            "conn": controller.conn,
+            "space_center": controller.conn.space_center,
+            "vessel": controller.vessel,
+            "observe": observe,
+            "getTelemetry": lambda: observe()["telemetry"],
+            "getVehicleState": lambda: observe()["vehicle"],
+            "getOrbitState": scoped_orbit_state,
+            "ksp_observe": observe,
+            "ksp_throttle": scoped_throttle,
+            "ksp_stage": scoped_stage,
+            "ksp_pitch_heading": scoped_pitch_heading,
+            "ksp_prograde": scoped_prograde,
+            "ksp_wait": lambda seconds: self._sleep(float(seconds), controller=controller),
+            "sleep": lambda seconds: self._sleep(float(seconds), controller=controller),
+            "wait": lambda seconds: self._sleep(float(seconds), controller=controller),
+        }
+        if extra:
+            scope.update(extra)
+        return scope
+
+    def _python_observe(self, controller: KRPCController) -> dict[str, Any]:
+        sample = self._read_telemetry_or_terminate(controller)
+        vehicle = controller.read_vehicle_state()
+        telemetry = sample.to_dict()
+        return {
+            **telemetry,
+            "telemetry": telemetry,
+            "vehicle": vehicle,
+            "target_orbit": {
+                "apoapsis_min_m": self.scenario.target_orbit.apoapsis_min_m,
+                "apoapsis_max_m": self.scenario.target_orbit.apoapsis_max_m,
+                "periapsis_min_m": self.scenario.target_orbit.periapsis_min_m,
+            },
+            "terminated": self.terminated,
+            "termination_reason": self.termination_reason,
+        }
 
     def _validate_code(self, code: str) -> None:
         if not code.strip():
-            raise KRPCExecutionError("executeKRPC code must not be empty")
+            raise FlightToolError("python code must not be empty")
         try:
             tree = ast.parse(code, mode="exec")
         except SyntaxError as exc:
-            raise KRPCExecutionError(str(exc)) from exc
-
+            raise FlightToolError(str(exc)) from exc
         banned_calls = {"breakpoint", "compile", "eval", "exec", "input", "open", "__import__"}
         banned_krpc_methods = {
             "load",
@@ -771,36 +770,39 @@ class LiveKRPCTools:
         }
         for node in ast.walk(tree):
             if isinstance(node, ast.Import | ast.ImportFrom) and not _is_allowed_import(node):
-                raise KRPCExecutionError(
-                    "imports are not allowed inside executeKRPC, except import math"
-                )
+                raise FlightToolError("imports are not allowed, except import math")
             if isinstance(node, ast.Name) and node.id.startswith("__"):
-                raise KRPCExecutionError("dunder names are not allowed inside executeKRPC")
+                raise FlightToolError("dunder names are not allowed")
             if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-                raise KRPCExecutionError("dunder attributes are not allowed inside executeKRPC")
+                raise FlightToolError("dunder attributes are not allowed")
             if isinstance(node, ast.Attribute) and node.attr in banned_krpc_methods:
-                raise KRPCExecutionError(f"{node.attr} is reserved for the benchmark harness")
+                raise FlightToolError(f"{node.attr} is reserved for the benchmark harness")
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id in banned_calls
             ):
-                raise KRPCExecutionError(f"{node.func.id} is not allowed inside executeKRPC")
+                raise FlightToolError(f"{node.func.id} is not allowed")
 
     def _exec_with_timeout(self, code: str, scope: dict[str, Any], timeout_s: float) -> None:
         if threading.current_thread() is not threading.main_thread():
-            self._exec_with_trace_timeout(code, scope, timeout_s)
+            self._exec_with_trace_timeout(
+                code,
+                scope,
+                timeout_s,
+                task=ControlTask("sync", code, timeout_s, time.monotonic()),
+            )
             return
 
         previous_handler = signal.getsignal(signal.SIGALRM)
 
         def handle_timeout(_signum: int, _frame: Any) -> None:
-            raise KRPCExecutionTimeout(f"executeKRPC exceeded {timeout_s:.3f}s")
+            raise PythonExecutionTimeout(f"python execution exceeded {timeout_s:.3f}s")
 
         signal.signal(signal.SIGALRM, handle_timeout)
         signal.setitimer(signal.ITIMER_REAL, timeout_s)
         try:
-            exec(compile(code, "<executeKRPC>", "exec"), scope, scope)
+            exec(compile(code, "<kspbench-python>", "exec"), scope, scope)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -811,49 +813,111 @@ class LiveKRPCTools:
         scope: dict[str, Any],
         timeout_s: float,
         *,
-        script: AsyncScript | None = None,
+        task: ControlTask,
     ) -> None:
         deadline = time.monotonic() + timeout_s
         previous_trace = sys.gettrace()
 
-        def trace_timeout(frame: Any, event: str, arg: Any) -> Any:
-            if script is not None and script.stop_requested:
-                raise AsyncScriptStopped(f"{script.script_id} stopped")
+        def trace_timeout(_frame: Any, _event: str, _arg: Any) -> Any:
+            if task.stop_requested:
+                raise TaskStopped("control task stopped")
             if time.monotonic() > deadline:
-                raise KRPCExecutionTimeout(f"executeKRPC exceeded {timeout_s:.3f}s")
+                raise PythonExecutionTimeout(f"python execution exceeded {timeout_s:.3f}s")
             return trace_timeout
 
         sys.settrace(trace_timeout)
         try:
-            exec(compile(code, "<executeKRPC>", "exec"), scope, scope)
+            exec(compile(code, "<kspbench-task>", "exec"), scope, scope)
         finally:
             sys.settrace(previous_trace)
+
+    def _timeout(self, requested: float | None, *, default: float) -> float:
+        value = default if requested is None else float(requested)
+        if value <= 0:
+            raise ValueError("timeout_s must be positive")
+        return min(value, self.max_wait_s)
+
+    def _failure(
+        self,
+        exc: Exception,
+        *,
+        started: float,
+        stdout: str = "",
+    ) -> dict[str, Any]:
+        self.invalid_actions += 1
+        return {
+            "ok": False,
+            "duration_s": round(time.monotonic() - started, 3),
+            "stdout": _truncate(stdout),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+
+    def _append_action(self, action: dict[str, Any]) -> None:
+        action.setdefault("index", len(self.actions))
+        action.setdefault("allowed", action.get("ok") is not False)
+        self.actions.append(action)
+        self.artifacts.append_action(action)
+        self._emit_event(
+            {
+                "type": "tool_call",
+                "tool": action.get("type"),
+                "ok": action.get("ok", True),
+                "mission_elapsed_s": self._latest_mission_elapsed_s(),
+            }
+        )
+
+    def _record_action(self, action_type: str, **payload: Any) -> None:
+        self._append_action({"type": action_type, **payload})
+
+    def _task_status(self, task: ControlTask | None) -> dict[str, Any] | None:
+        if task is None:
+            return None
+        now = time.monotonic()
+        finished = task.finished_monotonic
+        elapsed_s = (finished if finished is not None else now) - task.started_monotonic
+        return {
+            "task_id": task.task_id,
+            "status": task.status,
+            "running": task.status == "running",
+            "stop_requested": task.stop_requested,
+            "elapsed_s": round(elapsed_s, 3),
+            "timeout_s": task.timeout_s,
+            "stdout": task.stdout,
+            "result": _jsonable(task.result),
+            "error_type": task.error_type,
+            "error": task.error,
+        }
 
     def _latest_mission_elapsed_s(self) -> float:
         return self.telemetry[-1].mission_elapsed_s if self.telemetry else 0.0
 
     def _emit_event(self, event: dict[str, Any]) -> None:
         self.artifacts.append_event(event)
-        if not self.live_events:
-            return
-        if event.get("type") == "time_warp_failed":
-            print(
-                f"[kspbench] time warp failed; falling back to sleep: {event.get('error')}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event.get("type") == "time_warp_skipped":
-            print(
-                f"[kspbench] time warp skipped: {event.get('reason')}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event.get("type") == "run_terminated":
+        if self.live_events and event.get("type") == "run_terminated":
             print(
                 f"[kspbench] run terminated: {event.get('reason')}",
                 file=sys.stderr,
                 flush=True,
             )
+
+
+LiveKRPCTools = FlightSession
+
+
+def _reference_frame(vessel: Any, name: str) -> Any:
+    body = vessel.orbit.body
+    if name == "surface":
+        return body.reference_frame
+    if name == "orbital":
+        return body.non_rotating_reference_frame
+    if name == "vessel_surface":
+        return vessel.surface_reference_frame
+    raise ValueError("reference_frame must be one of: surface, orbital, vessel_surface")
+
+
+def _sample_propellant(sample: TelemetrySample) -> float:
+    return sample.liquid_fuel + sample.oxidizer + sample.solid_fuel
 
 
 def _safe_builtins() -> dict[str, Any]:
@@ -898,7 +962,7 @@ def _safe_import(
 ) -> Any:
     if name == "math" and level == 0:
         return math
-    raise ImportError("only import math is allowed inside executeKRPC")
+    raise ImportError("only import math is allowed")
 
 
 def _truncate(value: str, limit: int = 4000) -> str:

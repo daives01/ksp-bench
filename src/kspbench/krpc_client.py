@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -154,6 +155,39 @@ class KRPCController:
             "decouplers": _decouplers(vessel),
         }
 
+    def prepare_for_launchpad_run(self, *, wait_s: float = 2.0) -> None:
+        """Return KSP to an unpaused launchpad state for the next benchmark run."""
+        space_center = self.conn.space_center
+        _set_unpaused(space_center)
+
+        revert = getattr(space_center, "revert_to_launch", None)
+        if not callable(revert):
+            raise RuntimeError("kRPC SpaceCenter.revert_to_launch is not available")
+
+        revert()
+        _set_unpaused(space_center)
+
+        deadline = time.monotonic() + max(wait_s, 0.0)
+        while time.monotonic() < deadline:
+            try:
+                self.vessel = space_center.active_vessel
+                if not self.scenario.vessel_name or self.vessel.name == self.scenario.vessel_name:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        self.vessel = space_center.active_vessel
+        if self.scenario.vessel_name and self.vessel.name != self.scenario.vessel_name:
+            raise ValueError(
+                f"active vessel is {self.vessel.name!r}, expected {self.scenario.vessel_name!r}"
+            )
+
+    def close(self) -> None:
+        close = getattr(self.conn, "close", None)
+        if callable(close):
+            close()
+
 
 def _resource_amount(resources: Any, name: str) -> float:
     try:
@@ -174,6 +208,13 @@ def _is_controllable(vessel: Any) -> bool:
             return bool(vessel.parts.controlling)
         except Exception:
             return True
+
+
+def _set_unpaused(space_center: Any) -> None:
+    if hasattr(space_center, "paused"):
+        space_center.paused = False
+    elif hasattr(space_center, "game_paused"):
+        space_center.game_paused = False
 
 
 def _stage_resources(

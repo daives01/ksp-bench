@@ -1,49 +1,53 @@
 from __future__ import annotations
 
-import threading
+import json
 import time
 from types import SimpleNamespace
 
 from kspbench.artifacts import RunArtifacts
 from kspbench.config import load_scenario
-from kspbench.live import LiveKRPCTools
+from kspbench.krpc_client import KRPCController
+from kspbench.live import FlightSession
 from kspbench.telemetry import TelemetrySample
+
+
+class FakeAutoPilot:
+    def __init__(self) -> None:
+        self.engaged = False
+        self.pitch = None
+        self.heading = None
+        self.reference_frame = None
+        self.target_direction = None
+
+    def engage(self) -> None:
+        self.engaged = True
+
+    def target_pitch_and_heading(self, pitch: float, heading: float) -> None:
+        self.pitch = pitch
+        self.heading = heading
 
 
 class FakeController:
     def __init__(self) -> None:
-        self.space_center = SimpleNamespace(
-            active_vessel=None,
-            ut=100.0,
-            warp_calls=[],
+        self.body = SimpleNamespace(
+            atmosphere_depth=0.0,
+            reference_frame="surface-frame",
+            non_rotating_reference_frame="orbital-frame",
         )
-        self.space_center.warp_to = self._warp_to
         self.vessel = SimpleNamespace(
             name="Kerbal X",
-            control=SimpleNamespace(throttle=0.0),
-            orbit=SimpleNamespace(body=SimpleNamespace(atmosphere_depth=0.0)),
+            control=SimpleNamespace(
+                throttle=0.0,
+                current_stage=1,
+                activate_next_stage=lambda: ["part"],
+            ),
+            auto_pilot=FakeAutoPilot(),
+            orbit=SimpleNamespace(body=self.body),
+            surface_reference_frame="vessel-surface-frame",
+            flight=lambda _frame: SimpleNamespace(prograde=(1.0, 0.0, 0.0)),
         )
-        self.space_center.active_vessel = self.vessel
-        self.conn = SimpleNamespace(
-            space_center=self.space_center,
-        )
+        self.conn = SimpleNamespace(space_center=SimpleNamespace(active_vessel=self.vessel))
         self.met = 0.0
-
-    def _warp_to(
-        self,
-        ut: float,
-        *,
-        max_rails_rate: int,
-        max_physics_rate: int,
-    ) -> None:
-        self.space_center.warp_calls.append(
-            {
-                "ut": ut,
-                "max_rails_rate": max_rails_rate,
-                "max_physics_rate": max_physics_rate,
-            }
-        )
-        self.space_center.ut = ut
 
     def read_telemetry(self) -> TelemetrySample:
         self.met += 1.0
@@ -82,17 +86,8 @@ class FakeController:
             "current_stage_resources": {"LiquidFuel": 42.0, "Oxidizer": 50.0},
         }
 
-
-class DivergedController(FakeController):
-    def read_telemetry(self) -> TelemetrySample:
-        sample = super().read_telemetry()
-        return TelemetrySample(
-            **{
-                **sample.to_dict(),
-                "apoapsis_m": 1_000_000.0,
-                "periapsis_m": 60_000.0,
-            }
-        )
+    def close(self) -> None:
+        return
 
 
 class CrashedController(FakeController):
@@ -108,397 +103,316 @@ class CrashedController(FakeController):
         )
 
 
-def test_execute_krpc_runs_snippet_and_logs_action(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
+class LostVesselController(FakeController):
+    def read_telemetry(self) -> TelemetrySample:
+        raise RuntimeError("Error receiving message\r\nInstance not found")
+
+
+class PadFuelDrainController(FakeController):
+    def __init__(self) -> None:
+        super().__init__()
+        self.vessel.control.throttle = 1.0
+
+    def read_telemetry(self) -> TelemetrySample:
+        sample = super().read_telemetry()
+        if self.met < 2.0:
+            return sample
+        return TelemetrySample(
+            **{
+                **sample.to_dict(),
+                "mission_elapsed_s": 11.0,
+                "altitude_m": 80.0,
+                "surface_altitude_m": 7.0,
+                "surface_speed_m_s": 0.0,
+                "vertical_speed_m_s": 0.0,
+                "liquid_fuel": 10.0,
+                "oxidizer": 10.0,
+                "situation": "landed",
+            }
+        )
+
+
+class VacuumWarpController(FakeController):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conn.space_center.ut = 100.0
+        self.conn.space_center.warp_calls = []
+        self.conn.space_center.warp_to = self._warp_to
+
+    def _warp_to(
+        self,
+        ut: float,
+        *,
+        max_rails_rate: int,
+        max_physics_rate: int,
+    ) -> None:
+        self.conn.space_center.warp_calls.append(
+            {
+                "ut": ut,
+                "max_rails_rate": max_rails_rate,
+                "max_physics_rate": max_physics_rate,
+            }
+        )
+        self.conn.space_center.ut = ut
+
+    def read_telemetry(self) -> TelemetrySample:
+        self.met = max(self.met + 1.0, self.conn.space_center.ut - 100.0)
+        sample = super().read_telemetry()
+        return TelemetrySample(
+            **{
+                **sample.to_dict(),
+                "mission_elapsed_s": self.met,
+                "altitude_m": 80000.0,
+                "surface_altitude_m": 80000.0,
+                "situation": "flying",
+            }
+        )
+
+
+def _session(tmp_path, controller=None, **kwargs) -> FlightSession:
+    controller = controller or FakeController()
+    kwargs.setdefault("task_controller_factory", FakeController)
+    return FlightSession(
+        controller=controller,
         scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
+        artifacts=RunArtifacts.create(tmp_path, "live"),
+        **kwargs,
     )
 
-    result = tools.executeKRPC(
+
+def test_observe_returns_telemetry_vehicle_and_target(tmp_path) -> None:
+    session = _session(tmp_path)
+
+    result = session.observe()
+
+    assert result["ok"] is True
+    assert result["telemetry"]["body"] == "Kerbin"
+    assert result["vehicle"]["current_stage_resources"]["LiquidFuel"] == 42.0
+    assert result["target_orbit"]["periapsis_min_m"] == 70000
+
+
+def test_structured_controls_log_actions(tmp_path) -> None:
+    controller = FakeController()
+    session = _session(tmp_path, controller=controller)
+
+    throttle = session.set_throttle(0.7)
+    stage = session.stage()
+    session.set_pitch_heading(80, 90)
+    prograde = session.hold_prograde()
+
+    assert throttle["ok"] is True
+    assert controller.vessel.control.throttle == 0.7
+    assert stage["activated_parts"] == 1
+    assert controller.vessel.auto_pilot.pitch == 80
+    assert prograde["reference_frame"] == "orbital"
+    assert [action["type"] for action in session.actions] == [
+        "set_throttle",
+        "stage",
+        "set_pitch_heading",
+        "hold_prograde",
+    ]
+
+
+def test_krpc_controller_reverts_to_unpaused_launchpad() -> None:
+    scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
+    launch_vessel = SimpleNamespace(name="Kerbal X")
+    space_center = SimpleNamespace(
+        active_vessel=launch_vessel,
+        paused=True,
+        revert_calls=0,
+    )
+
+    def revert_to_launch() -> None:
+        space_center.revert_calls += 1
+        space_center.paused = True
+        space_center.active_vessel = launch_vessel
+
+    space_center.revert_to_launch = revert_to_launch
+    controller = KRPCController(SimpleNamespace(space_center=space_center), scenario)
+
+    controller.prepare_for_launchpad_run(wait_s=0.0)
+
+    assert space_center.revert_calls == 1
+    assert space_center.paused is False
+    assert controller.vessel is launch_vessel
+
+
+def test_execute_python_is_escape_hatch_and_rejects_unsafe_import(tmp_path) -> None:
+    session = _session(tmp_path)
+
+    ok = session.execute_python(
         "vessel.control.throttle = 0.5\nresult = {'throttle': vessel.control.throttle}"
     )
+    bad = session.execute_python("import os")
+
+    assert ok["ok"] is True
+    assert ok["result"] == {"throttle": 0.5}
+    assert bad["ok"] is False
+    assert bad["error_type"] == "FlightToolError"
+
+
+def test_execute_python_exposes_flat_observe_and_tool_aliases(tmp_path) -> None:
+    session = _session(tmp_path)
+
+    result = session.execute_python(
+        "telem = observe()\n"
+        "ksp_throttle(0.25)\n"
+        "ksp_pitch_heading(75, 90)\n"
+        "result = {\n"
+        "    'altitude': telem['altitude_m'],\n"
+        "    'vehicle': telem['vehicle']['name'],\n"
+        "    'throttle': vessel.control.throttle,\n"
+        "}\n"
+    )
 
     assert result["ok"] is True
-    assert result["result"] == {"throttle": 0.5}
-    assert tools.actions[0]["type"] == "execute_krpc"
-    assert (artifacts.run_dir / "action_log.jsonl").exists()
+    assert result["result"]["altitude"] > 0
+    assert result["result"]["vehicle"] == "Kerbal X"
+    assert result["result"]["throttle"] == 0.25
 
 
-def test_execute_krpc_rejects_imports(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
+def test_only_one_background_task_runs_at_a_time(tmp_path) -> None:
+    session = _session(tmp_path, poll_interval_s=0.01)
+
+    first = session.start_task("while not should_stop():\n    sleep(0.02)", timeout_s=1.0)
+    second = session.start_task("result = 'nope'", timeout_s=1.0)
+    stopped = session.stop_task()
+
+    assert first["ok"] is True
+    assert second["ok"] is False
+    assert "already running" in second["error"]
+    assert stopped["ok"] is True
+
+
+def test_foreground_tools_work_while_background_task_runs_on_separate_controller(
+    tmp_path,
+) -> None:
+    task_controllers: list[FakeController] = []
+
+    def make_task_controller() -> FakeController:
+        controller = FakeController()
+        task_controllers.append(controller)
+        return controller
+
+    session = _session(
+        tmp_path,
+        poll_interval_s=0.01,
+        task_controller_factory=make_task_controller,
     )
 
-    result = tools.executeKRPC("import os")
+    started = session.start_task("while not should_stop():\n    sleep(0.02)", timeout_s=1.0)
+    observed = session.observe()
+    throttled = session.set_throttle(0.5)
+    executed = session.execute_python("print('hi')")
+    stopped = session.stop_task()
 
-    assert result["ok"] is False
-    assert result["error_type"] == "KRPCExecutionError"
-    assert tools.invalid_actions == 1
+    assert started["ok"] is True
+    assert observed["ok"] is True
+    assert throttled["ok"] is True
+    assert executed["ok"] is True
+    assert task_controllers
+    assert stopped["ok"] is True
 
 
-def test_execute_krpc_allows_import_math(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
+def test_background_task_reports_result_and_stdout(tmp_path) -> None:
+    session = _session(tmp_path, poll_interval_s=0.01)
+
+    started = session.start_task(
+        "print('done')\n"
+        "result = {'met': getTelemetry()['mission_elapsed_s']}"
     )
+    assert started["ok"] is True
 
-    result = tools.executeKRPC("import math\nresult = round(math.sqrt(9))")
+    deadline = time.monotonic() + 1.0
+    status = session.check_task()
+    while status["task"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = session.check_task()
 
-    assert result["ok"] is True
-    assert result["result"] == 3
-
-
-def test_execute_krpc_rejects_harness_reset_calls(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    result = tools.executeKRPC("space_center.revert_to_launch()")
-
-    assert result["ok"] is False
-    assert result["error_type"] == "KRPCExecutionError"
-    assert "reserved for the benchmark harness" in result["error"]
-    assert tools.invalid_actions == 1
-
-
-def test_observation_tools_return_snapshots(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    telemetry = tools.getTelemetry()
-    state = tools.getVehicleState()
-
-    assert telemetry["body"] == "Kerbin"
-    assert state["name"] == "Kerbal X"
-    assert state["current_stage_resources"]["LiquidFuel"] == 42.0
-    assert len(tools.telemetry) == 1
-
-
-def test_wait_uses_time_warp_above_threshold(tmp_path) -> None:
-    controller = FakeController()
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        warp_threshold_s=5.0,
-    )
-
-    result = tools.wait(10.0)
-
-    assert result["ok"] is True
-    assert result["time_warp_used"] is True
-    assert controller.space_center.warp_calls == [
-        {"ut": 110.0, "max_rails_rate": 100000, "max_physics_rate": 4}
-    ]
-    assert tools.actions[0]["type"] == "wait"
-
-
-def test_wait_does_not_time_warp_in_atmosphere(tmp_path) -> None:
-    controller = FakeController()
-    controller.vessel.orbit.body.atmosphere_depth = 70000.0
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        warp_threshold_s=0.05,
-        poll_interval_s=0.2,
-    )
-
-    result = tools.wait(0.1)
-
-    assert result["ok"] is True
-    assert result["time_warp_used"] is False
-    assert controller.space_center.warp_calls == []
+    assert status["task"]["status"] == "done"
+    assert status["task"]["result"]["met"] > 0
+    assert "done" in status["task"]["stdout"]
 
 
 def test_wait_rejects_long_atmospheric_wait(tmp_path) -> None:
     controller = FakeController()
-    controller.vessel.orbit.body.atmosphere_depth = 70000.0
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        max_atmospheric_sleep_s=2.0,
-    )
+    controller.body.atmosphere_depth = 70000.0
+    session = _session(tmp_path, controller=controller, max_atmospheric_wait_s=2.0)
 
-    result = tools.wait(10.0)
+    result = session.wait(10.0)
 
     assert result["ok"] is False
     assert result["error_type"] == "AtmosphericWaitDisallowed"
-    assert tools.invalid_actions == 1
-
-
-def test_execute_krpc_rejects_long_atmospheric_sleep(tmp_path) -> None:
-    controller = FakeController()
-    controller.vessel.orbit.body.atmosphere_depth = 70000.0
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        max_atmospheric_sleep_s=2.0,
-    )
-
-    result = tools.executeKRPC("sleep(10)")
-
-    assert result["ok"] is False
-    assert result["error_type"] == "AtmosphericWaitDisallowed"
-
-
-def test_execute_krpc_timeout_works_from_worker_thread(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-    result_holder: list[dict[str, object]] = []
-
-    thread = threading.Thread(
-        target=lambda: result_holder.append(
-            tools.executeKRPC("while True:\n    x = 1 + 1", timeout_s=0.05)
-        )
-    )
-    thread.start()
-    thread.join(timeout=1.0)
-
-    assert not thread.is_alive()
-    assert result_holder[0]["ok"] is False
-    assert result_holder[0]["error_type"] == "KRPCExecutionTimeout"
-    assert tools.terminated is False
-    assert tools.termination_reason is None
-
-
-def test_execute_krpc_allows_calls_after_timeout(tmp_path) -> None:
-    controller = FakeController()
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    timeout = tools.executeKRPC("while True:\n    x = 1 + 1", timeout_s=0.05)
-    retry = tools.executeKRPC("result = getTelemetry()")
-
-    assert timeout["error_type"] == "KRPCExecutionTimeout"
-    assert retry["ok"] is True
-    assert retry["result"]["mission_elapsed_s"] >= 1.0
-
-
-def test_execute_krpc_timeout_includes_lock_wait(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-    lock_held = threading.Event()
-    release_lock = threading.Event()
-
-    def hold_lock() -> None:
-        with tools.krpc_lock:
-            lock_held.set()
-            release_lock.wait(timeout=1.0)
-
-    thread = threading.Thread(target=hold_lock)
-    thread.start()
-    lock_held.wait(timeout=1.0)
-    try:
-        result = tools.executeKRPC("result = getTelemetry()", timeout_s=0.05)
-    finally:
-        release_lock.set()
-        thread.join(timeout=1.0)
-
-    assert result["ok"] is False
-    assert result["error_type"] == "KRPCExecutionTimeout"
-    assert result["lock_wait_s"] > 0
-    assert result["duration_s"] < 0.5
-
-
-def test_execute_krpc_allows_exception_handlers(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    result = tools.executeKRPC(
-        "try:\n    raise Exception('debug')\nexcept Exception as exc:\n    result = str(exc)"
-    )
-
-    assert result["ok"] is True
-    assert result["result"] == "debug"
-
-
-def test_execute_krpc_async_completes_and_reports_status(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        poll_interval_s=0.01,
-    )
-
-    started = tools.executeKRPCAsync(
-        "sleep(0.02)\nprint('done')\nresult = {'met': getTelemetry()['mission_elapsed_s']}"
-    )
-    script_id = started["script_id"]
-
-    deadline = time.monotonic() + 1.0
-    status = tools.checkAsync(script_id)
-    while status["script"]["status"] == "running" and time.monotonic() < deadline:
-        time.sleep(0.01)
-        status = tools.checkAsync(script_id)
-
-    assert started["ok"] is True
-    assert status["ok"] is True
-    assert status["script"]["status"] == "done"
-    assert status["script"]["result"]["met"] >= 1.0
-    assert "done" in status["script"]["stdout"]
-    assert status["latest_telemetry"]["time_to_apoapsis_s"] == 30.0
-
-
-def test_get_orbit_state_returns_compact_snapshot(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    result = tools.executeKRPC("result = getOrbitState()")
-
-    assert result["ok"] is True
-    assert result["result"]["apoapsis_m"] == 1000.0
-    assert result["result"]["time_to_apoapsis_s"] == 30.0
-    assert "active_engines" not in result["result"]
-
-
-def test_execute_krpc_async_reports_stdout_while_running(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        poll_interval_s=0.01,
-    )
-
-    started = tools.executeKRPCAsync("print('ready')\nsleep(0.2)\nprint('done')", timeout_s=1.0)
-    script_id = started["script_id"]
-
-    deadline = time.monotonic() + 1.0
-    status = tools.checkAsync(script_id)
-    while "ready" not in status["script"]["stdout"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-        status = tools.checkAsync(script_id)
-
-    assert status["script"]["status"] == "running"
-    assert "ready" in status["script"]["stdout"]
-    assert "done" not in status["script"]["stdout"]
-
-
-def test_execute_krpc_async_stdout_keeps_recent_tail(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        poll_interval_s=0.01,
-    )
-
-    started = tools.executeKRPCAsync(
-        "for i in range(500):\n    print(f'line-{i:03d}', 'x' * 20)",
-        timeout_s=1.0,
-    )
-    script_id = started["script_id"]
-
-    deadline = time.monotonic() + 1.0
-    status = tools.checkAsync(script_id)
-    while status["script"]["status"] == "running" and time.monotonic() < deadline:
-        time.sleep(0.01)
-        status = tools.checkAsync(script_id)
-
-    stdout = status["script"]["stdout"]
-    assert status["script"]["status"] == "done"
-    assert len(stdout) <= 4000
-    assert stdout.startswith("<truncated>...")
-    assert "line-499" in stdout
-    assert "line-000" not in stdout
-
-
-def test_records_orbit_divergence_event_once(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=DivergedController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-    )
-
-    tools.getTelemetry()
-    tools.getTelemetry()
-
-    events = (tmp_path / "live" / "events.jsonl").read_text(encoding="utf-8")
-    assert events.count("orbit_target_diverged") == 1
-
-
-def test_kill_async_requests_cooperative_stop(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=FakeController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        poll_interval_s=0.01,
-    )
-
-    started = tools.executeKRPCAsync(
-        "while not should_stop():\n    sleep(0.02)\nprint('stopping')",
-        timeout_s=1.0,
-    )
-    script_id = started["script_id"]
-    killed = tools.killAsync(script_id)
-
-    deadline = time.monotonic() + 1.0
-    status = tools.checkAsync(script_id)
-    while status["script"]["status"] == "running" and time.monotonic() < deadline:
-        time.sleep(0.01)
-        status = tools.checkAsync(script_id)
-
-    assert killed["ok"] is True
-    assert status["script"]["status"] == "stopped"
-    assert status["script"]["error_type"] == "AsyncScriptStopped"
 
 
 def test_wait_stops_when_vessel_is_destroyed(tmp_path) -> None:
-    artifacts = RunArtifacts.create(tmp_path, "live")
-    tools = LiveKRPCTools(
-        controller=CrashedController(),
-        scenario=load_scenario("scenarios/kerbin_orbit_80km.toml"),
-        artifacts=artifacts,
-        poll_interval_s=0.01,
-    )
+    session = _session(tmp_path, controller=CrashedController(), poll_interval_s=0.01)
 
-    result = tools.wait(10.0)
+    result = session.wait(10.0)
 
     assert result["ok"] is False
-    assert result["error_type"] == "KSPRunTerminated"
-    assert result["error"] == "vessel_not_intact"
-    assert tools.terminated is True
+    assert result["error_type"] == "FlightTerminated"
+    events = [
+        json.loads(line)
+        for line in (session.artifacts.run_dir / "events.jsonl").read_text().splitlines()
+    ]
+    assert any(event["type"] == "run_terminated" for event in events)
+
+
+def test_wait_stops_when_vessel_is_landed_and_burning_fuel(tmp_path) -> None:
+    session = _session(tmp_path, controller=PadFuelDrainController(), poll_interval_s=0.01)
+    session.observe()
+
+    result = session.wait(1.0)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "FlightTerminated"
+    assert result["error"] == "vessel_landed_burning_fuel"
+
+
+def test_wait_uses_time_warp_outside_atmosphere_and_finishes_with_polling(tmp_path) -> None:
+    controller = VacuumWarpController()
+    session = _session(tmp_path, controller=controller, poll_interval_s=0.01)
+    session.observe()
+
+    result = session.wait(30.0)
+
+    assert result["ok"] is True
+    assert result["telemetry"]["mission_elapsed_s"] >= 31.0
+    assert controller.conn.space_center.warp_calls == [
+        {
+            "ut": 127.0,
+            "max_rails_rate": 1000,
+            "max_physics_rate": 4,
+        }
+    ]
+
+
+def test_wait_treats_lost_krpc_vessel_instance_as_terminated(tmp_path) -> None:
+    session = _session(tmp_path, controller=LostVesselController(), poll_interval_s=0.01)
+
+    result = session.wait(1.0)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "FlightTerminated"
+    assert result["error"] == "vessel_lost"
+    assert session.terminated is True
+    assert session.termination_reason == "vessel_lost"
+    events = [
+        json.loads(line)
+        for line in (session.artifacts.run_dir / "events.jsonl").read_text().splitlines()
+    ]
+    terminated = [event for event in events if event["type"] == "run_terminated"]
+    assert len(terminated) == 1
+    assert terminated[0]["reason"] == "vessel_lost"
+    assert terminated[0]["error_type"] == "RuntimeError"
+
+
+def test_observe_returns_error_after_lost_vessel_instance(tmp_path) -> None:
+    session = _session(tmp_path, controller=LostVesselController())
+
+    result = session.observe()
+
+    assert result["ok"] is False
+    assert result["error_type"] == "FlightTerminated"
+    assert result["error"] == "vessel_lost"
