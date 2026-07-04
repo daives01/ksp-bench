@@ -12,10 +12,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from kspbench.artifacts import RunArtifacts
-from kspbench.config import Scenario
-from kspbench.krpc_client import KRPCController
-from kspbench.telemetry import TelemetrySample
+from bench.artifacts import RunArtifacts
+from bench.config import Scenario
+from bench.krpc_client import KRPCController
+from bench.telemetry import TelemetrySample
 
 
 class FlightToolError(RuntimeError):
@@ -273,7 +273,7 @@ class FlightSession:
             thread = threading.Thread(
                 target=self._run_task,
                 args=(task,),
-                name="kspbench-control-task",
+                name="bench-control-task",
                 daemon=True,
             )
             task.thread = thread
@@ -362,6 +362,7 @@ class FlightSession:
 
     def record_telemetry(self, sample: TelemetrySample) -> None:
         self.telemetry.append(sample)
+        self.artifacts.append_telemetry_sample(sample)
         propellant = _sample_propellant(sample)
         if self._initial_propellant is None:
             self._initial_propellant = propellant
@@ -802,7 +803,7 @@ class FlightSession:
         signal.signal(signal.SIGALRM, handle_timeout)
         signal.setitimer(signal.ITIMER_REAL, timeout_s)
         try:
-            exec(compile(code, "<kspbench-python>", "exec"), scope, scope)
+            exec(compile(code, "<bench-python>", "exec"), scope, scope)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -827,7 +828,7 @@ class FlightSession:
 
         sys.settrace(trace_timeout)
         try:
-            exec(compile(code, "<kspbench-task>", "exec"), scope, scope)
+            exec(compile(code, "<bench-task>", "exec"), scope, scope)
         finally:
             sys.settrace(previous_trace)
 
@@ -896,7 +897,7 @@ class FlightSession:
         self.artifacts.append_event(event)
         if self.live_events and event.get("type") == "run_terminated":
             print(
-                f"[kspbench] run terminated: {event.get('reason')}",
+                f"[bench] run terminated: {event.get('reason')}",
                 file=sys.stderr,
                 flush=True,
             )

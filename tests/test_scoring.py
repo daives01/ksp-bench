@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kspbench.config import load_scenario
-from kspbench.scoring import score_trace
-from kspbench.telemetry import TelemetrySample
+from bench.config import load_scenario
+from bench.scoring import score_trace
+from bench.telemetry import TelemetrySample
 
 
 def _sample(**overrides):

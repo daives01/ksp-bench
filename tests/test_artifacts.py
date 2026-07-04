@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kspbench.artifacts import RunArtifacts, telemetry_waypoints
-from kspbench.config import load_scenario
-from kspbench.scoring import score_trace
-from kspbench.telemetry import TelemetrySample
+from bench.artifacts import RunArtifacts, telemetry_waypoints
+from bench.config import load_scenario
+from bench.scoring import score_trace
+from bench.telemetry import TelemetrySample
 
 
 def test_writes_score_and_summary(tmp_path: Path) -> None:

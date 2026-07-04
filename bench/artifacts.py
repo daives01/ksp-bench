@@ -12,10 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from kspbench import __version__
-from kspbench.config import Scenario
-from kspbench.scoring import ScoreResult
-from kspbench.telemetry import TELEMETRY_COLUMNS, TelemetrySample
+from bench import __version__
+from bench.config import Scenario
+from bench.krpc_client import KRPCConfig
+from bench.scoring import ScoreResult
+from bench.telemetry import TELEMETRY_COLUMNS, TelemetrySample
 
 
 class RunArtifacts:
@@ -34,7 +35,12 @@ class RunArtifacts:
             raise FileNotFoundError(f"run directory does not exist: {path}")
         return cls(path, exist_ok=True)
 
-    def write_manifest(self, scenario: Scenario, agent: dict[str, str | None]) -> None:
+    def write_manifest(
+        self,
+        scenario: Scenario,
+        agent: dict[str, str | None],
+        krpc: KRPCConfig | None = None,
+    ) -> None:
         manifest = {
             "run_id": self.run_dir.name,
             "created_at": datetime.now(UTC).isoformat(),
@@ -47,7 +53,7 @@ class RunArtifacts:
                 "git_commit": _git_commit(),
                 "uv_lock_sha256": _file_sha256(Path("uv.lock")),
             },
-            "krpc": asdict(scenario.krpc),
+            "krpc": asdict(krpc or KRPCConfig.from_env()),
         }
         self.write_json("manifest.json", manifest)
 
@@ -65,6 +71,9 @@ class RunArtifacts:
 
     def append_action(self, action: dict[str, Any]) -> None:
         self.append_jsonl("action_log.jsonl", action)
+
+    def append_telemetry_sample(self, sample: TelemetrySample) -> None:
+        self.append_jsonl("telemetry.jsonl", sample.to_dict())
 
     def write_telemetry(self, samples: list[TelemetrySample]) -> None:
         with (self.run_dir / "telemetry.csv").open("w", encoding="utf-8", newline="") as handle:

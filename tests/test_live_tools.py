@@ -4,11 +4,11 @@ import json
 import time
 from types import SimpleNamespace
 
-from kspbench.artifacts import RunArtifacts
-from kspbench.config import load_scenario
-from kspbench.krpc_client import KRPCController
-from kspbench.live import FlightSession
-from kspbench.telemetry import TelemetrySample
+from bench.artifacts import RunArtifacts
+from bench.config import load_scenario
+from bench.krpc_client import KRPCController
+from bench.live import FlightSession
+from bench.telemetry import TelemetrySample
 
 
 class FakeAutoPilot:

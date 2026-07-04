@@ -3,23 +3,31 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-from kspbench import __version__
-from kspbench.agent_adapters import (
+from bench import __version__
+from bench.agent_adapters import (
+    PROJECT_ROOT,
+    REFERENCE_DIR,
     ExternalAgentResult,
     OpenCodeAgentAdapter,
-    ToolBridgeServer,
     extract_usage,
+    prepare_opencode_workspace,
 )
-from kspbench.artifacts import RunArtifacts, default_run_id
-from kspbench.config import Scenario, load_scenario
-from kspbench.krpc_client import KRPCController, check_krpc_package, check_krpc_reachable
-from kspbench.live import LiveKRPCTools
-from kspbench.scoring import score_trace
-from kspbench.telemetry import TelemetrySample
+from bench.artifacts import RunArtifacts, default_run_id
+from bench.config import Scenario, load_scenario
+from bench.krpc_client import (
+    KRPCConfig,
+    KRPCController,
+    check_krpc_package,
+    check_krpc_reachable,
+)
+from bench.scoring import score_trace
+from bench.telemetry import TelemetrySample
 
 RUNS_DIR = Path("runs")
 
@@ -42,9 +50,66 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("scenario", nargs="?", default="scenarios/kerbin_orbit_80km.toml")
     doctor.set_defaults(func=_doctor)
 
+    prepare_agent = subparsers.add_parser(
+        "prepare-agent",
+        help="prepare the reusable OpenCode KSP agent reference tree",
+    )
+    prepare_agent.add_argument(
+        "--krpc-repo",
+        help="path to an upstream krpc/krpc checkout; defaults to KSPBENCH_KRPC_REPO or /tmp",
+    )
+    prepare_agent.set_defaults(func=_prepare_agent)
+
+    agent = subparsers.add_parser(
+        "agent",
+        help="open the reusable OpenCode KSP agent against the live KSP MCP server",
+    )
+    agent.add_argument("scenario", nargs="?", default="scenarios/kerbin_orbit_80km.toml")
+    agent.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
+    agent.add_argument(
+        "--executable",
+        help="OpenCode executable path; defaults to opencode",
+    )
+    agent.add_argument(
+        "--agent-arg",
+        action="append",
+        default=[],
+        help="extra argument to pass to opencode; repeat for multiple args",
+    )
+    agent.add_argument(
+        "--prompt",
+        help="optional initial prompt for the OpenCode TUI",
+    )
+    agent.add_argument("--run-id")
+    agent.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=15.0,
+        help="default max wall-clock seconds for each ksp_execute_python call",
+    )
+    agent.add_argument(
+        "--task-timeout",
+        type=float,
+        default=180.0,
+        help="default max wall-clock seconds for the background control task",
+    )
+    agent.add_argument(
+        "--max-sleep",
+        type=float,
+        default=240.0,
+        help="max seconds allowed for ksp_execute_python sleep/wait helpers",
+    )
+    agent.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        help="seconds between telemetry samples during sleep/wait helpers",
+    )
+    agent.set_defaults(func=_agent)
+
     run = subparsers.add_parser(
         "run",
-        help="run a live benchmark with OpenCode custom KSP tools",
+        help="run a live benchmark with the reusable OpenCode KSP agent",
     )
     run.add_argument("scenario")
     run.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
@@ -68,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--execution-timeout",
         type=float,
         default=15.0,
-        help="default max wall-clock seconds for each ksp_execute call",
+        help="default max wall-clock seconds for each ksp_execute_python call",
     )
     run.add_argument(
         "--task-timeout",
@@ -80,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-sleep",
         type=float,
         default=240.0,
-        help="max seconds allowed for ksp_execute sleep/wait helpers",
+        help="max seconds allowed for ksp_execute_python sleep/wait helpers",
     )
     run.add_argument(
         "--poll-interval",
@@ -146,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--execution-timeout",
         type=float,
         default=15.0,
-        help="default max wall-clock seconds for each ksp_execute call",
+        help="default max wall-clock seconds for each ksp_execute_python call",
     )
     batch.add_argument(
         "--task-timeout",
@@ -158,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-sleep",
         type=float,
         default=240.0,
-        help="max seconds allowed for ksp_execute sleep/wait helpers",
+        help="max seconds allowed for ksp_execute_python sleep/wait helpers",
     )
     batch.add_argument(
         "--poll-interval",
@@ -199,13 +264,92 @@ def _doctor(args: argparse.Namespace) -> int:
         ("scenario", True, f"loaded {scenario.instance_id}"),
         ("python", sys.version_info >= (3, 12), sys.version.split()[0]),
         _doctor_tuple(check_krpc_package()),
-        _doctor_tuple(check_krpc_reachable(scenario.krpc)),
+        _doctor_tuple(check_krpc_reachable(KRPCConfig.from_env())),
     ]
     for name, ok, detail in checks:
         marker = "ok" if ok else "fail"
         print(f"{marker:4} {name}: {detail}")
     required_ok = checks[0][1] and checks[1][1]
     return 0 if required_ok else 1
+
+
+def _prepare_agent(args: argparse.Namespace) -> int:
+    krpc_repo = Path(args.krpc_repo) if args.krpc_repo else None
+    counts = prepare_opencode_workspace(PROJECT_ROOT, krpc_repo=krpc_repo)
+    reference_root = PROJECT_ROOT / REFERENCE_DIR
+    print(f"Prepared OpenCode KSP agent reference at {reference_root}")
+    if counts:
+        for name, count in sorted(counts.items()):
+            print(f"ok   {name}: {count} files")
+    else:
+        print("warn no kRPC source copied; install krpc or pass --krpc-repo")
+    return 0
+
+
+def _agent(args: argparse.Namespace) -> int:
+    scenario = load_scenario(args.scenario)
+    run_id = args.run_id or default_run_id("opencode_agent")
+    artifacts = RunArtifacts.create(RUNS_DIR, run_id)
+    agent = {
+        "name": "ksp",
+        "model": args.model,
+        "adapter": "opencode_tui_ksp_agent",
+    }
+    artifacts.write_manifest(scenario, agent)
+    artifacts.copy_scenario(scenario)
+    artifacts.write_run_config(
+        agent,
+        tool_api_version="1.0.0",
+        python_timeout_s=args.execution_timeout,
+        task_timeout_s=args.task_timeout,
+        max_wait_s=args.max_sleep,
+        poll_interval_s=args.poll_interval,
+        opencode_agent="ksp",
+        opencode_mode="tui",
+    )
+    artifacts.append_event({"type": "agent_started", "mode": "opencode_tui"})
+
+    prepare_opencode_workspace(PROJECT_ROOT)
+    executable = args.executable or "opencode"
+    command = [executable, str(PROJECT_ROOT), "--agent", "ksp", "--auto"]
+    if args.model:
+        command.extend(["--model", args.model])
+    if args.prompt:
+        command.extend(["--prompt", args.prompt])
+    command.extend(args.agent_arg)
+
+    env = dict(os.environ)
+    env["KSPBENCH_SCENARIO"] = (
+        str(scenario.source_path.resolve()) if scenario.source_path else args.scenario
+    )
+    env["KSPBENCH_REFERENCE_ROOT"] = str((PROJECT_ROOT / REFERENCE_DIR).resolve())
+    env["KSPBENCH_RUN_DIR"] = str(artifacts.run_dir.resolve())
+    env["KSPBENCH_EXECUTION_TIMEOUT"] = str(args.execution_timeout)
+    env["KSPBENCH_TASK_TIMEOUT"] = str(args.task_timeout)
+    env["KSPBENCH_MAX_SLEEP"] = str(args.max_sleep)
+    env["KSPBENCH_POLL_INTERVAL"] = str(args.poll_interval)
+    env.setdefault("KSPBENCH_PYTHON", sys.executable)
+    print(f"Starting OpenCode KSP agent. Artifacts: {artifacts.run_dir}")
+    completed = subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=False)
+
+    artifacts.write_json(
+        "agent_process.json",
+        {
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": "",
+            "stderr": "",
+            "timed_out": False,
+            "usage": None,
+        },
+    )
+    telemetry = _read_telemetry_artifact(artifacts.run_dir)
+    _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    artifacts.write_telemetry(telemetry)
+    artifacts.write_telemetry_waypoints(telemetry)
+    artifacts.append_event({"type": "agent_finished", "exit_code": completed.returncode})
+    print(f"Wrote interactive agent artifacts to {artifacts.run_dir}")
+    return completed.returncode
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -230,55 +374,26 @@ def _run(args: argparse.Namespace) -> int:
         poll_interval_s=args.poll_interval,
         telemetry_waypoint_interval_s=args.telemetry_waypoint_interval,
         agent_timeout_s=args.agent_timeout or scenario.timeout_s,
-        opencode_permissions="deny_all_except_ksp_tools",
+        opencode_permissions="agent_scoped_virtual_bash_no_edits",
+        opencode_agent="ksp",
     )
     artifacts.append_event({"type": "run_started", "mode": "opencode"})
 
-    try:
-        controller = KRPCController.connect(scenario)
-    except Exception as exc:
-        artifacts.append_event(
-            {"type": "run_failed", "reason": "no_connection", "detail": str(exc)}
-        )
-        _finalize_run(
-            artifacts=artifacts,
-            run_id=run_id,
-            scenario=scenario,
-            agent=agent,
-            telemetry=[],
-            invalid_actions=0,
-            action_count=0,
-            exit_code=2,
-            telemetry_waypoint_interval=args.telemetry_waypoint_interval,
-        )
-        print(f"Could not start live kRPC run: {exc}")
-        return 2
-
-    tools = LiveKRPCTools(
-        controller=controller,
-        scenario=scenario,
-        artifacts=artifacts,
-        python_timeout_s=args.execution_timeout,
-        task_timeout_s=args.task_timeout,
-        max_wait_s=args.max_sleep,
-        poll_interval_s=args.poll_interval,
-        live_events=True,
-    )
     exit_code = 0
     result: ExternalAgentResult | None = None
 
     try:
-        tools.observe()
-        with ToolBridgeServer(tools) as bridge:
-            artifacts.append_event({"type": "tool_bridge_started", "url": bridge.url})
-            result = adapter.run(
-                scenario=scenario,
-                bridge_url=bridge.url,
-                timeout_s=args.agent_timeout or scenario.timeout_s,
-                stream_output=not args.no_stream_agent,
-            )
+        result = adapter.run(
+            scenario=scenario,
+            run_dir=artifacts.run_dir,
+            timeout_s=args.agent_timeout or scenario.timeout_s,
+            execution_timeout_s=args.execution_timeout,
+            task_timeout_s=args.task_timeout,
+            max_sleep_s=args.max_sleep,
+            poll_interval_s=args.poll_interval,
+            stream_output=not args.no_stream_agent,
+        )
         if result.returncode != 0:
-            tools.invalid_actions += 1
             artifacts.append_event(
                 {
                     "type": "run_failed",
@@ -289,7 +404,6 @@ def _run(args: argparse.Namespace) -> int:
             )
             exit_code = 3
     except Exception as exc:
-        tools.invalid_actions += 1
         artifacts.append_event({"type": "run_failed", "reason": "agent_error", "detail": str(exc)})
         print(f"OpenCode agent failed: {exc}")
         exit_code = 3
@@ -319,20 +433,23 @@ def _run(args: argparse.Namespace) -> int:
             },
         )
 
-    try:
-        with tools.krpc_lock:
-            tools.record_telemetry(controller.read_telemetry())
-    except Exception as exc:
-        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+    telemetry = _read_telemetry_artifact(artifacts.run_dir)
+    _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    actions = _read_jsonl(artifacts.run_dir / "action_log.jsonl")
+    invalid_actions = sum(
+        1
+        for action in actions
+        if not action.get("allowed", True) or action.get("ok") is False
+    )
 
     score = _finalize_run(
         artifacts=artifacts,
         run_id=run_id,
         scenario=scenario,
         agent=agent,
-        telemetry=tools.telemetry,
-        invalid_actions=tools.invalid_actions,
-        action_count=len(tools.actions),
+        telemetry=telemetry,
+        invalid_actions=invalid_actions,
+        action_count=len(actions),
         exit_code=exit_code,
         telemetry_waypoint_interval=args.telemetry_waypoint_interval,
     )
@@ -521,6 +638,34 @@ def _read_telemetry(path: Path) -> list[TelemetrySample]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         return [TelemetrySample.from_mapping(_coerce_row(row)) for row in reader]
+
+
+def _read_telemetry_artifact(run_dir: Path) -> list[TelemetrySample]:
+    jsonl = run_dir / "telemetry.jsonl"
+    if jsonl.exists():
+        return [
+            TelemetrySample.from_mapping(json.loads(line))
+            for line in jsonl.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+    csv_path = run_dir / "telemetry.csv"
+    return _read_telemetry(csv_path) if csv_path.exists() else []
+
+
+def _append_final_telemetry_sample(
+    artifacts: RunArtifacts,
+    scenario: Scenario,
+    telemetry: list[TelemetrySample],
+) -> None:
+    try:
+        controller = KRPCController.connect(scenario)
+        sample = controller.read_telemetry()
+        controller.close()
+    except Exception as exc:
+        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+        return
+    telemetry.append(sample)
+    artifacts.append_telemetry_sample(sample)
 
 
 def _coerce_row(row: dict[str, str]) -> dict[str, object]:

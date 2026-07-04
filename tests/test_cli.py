@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from kspbench.cli import _batch, _score, build_parser
+from bench.cli import _batch, _score, build_parser
 
 
 def test_only_opencode_execution_command_is_registered() -> None:
@@ -76,8 +76,8 @@ def test_batch_resets_around_each_run(monkeypatch) -> None:
         calls.append(("run", args.model, args.run_id))
         return 0
 
-    monkeypatch.setattr("kspbench.cli._reset_launchpad", fake_reset)
-    monkeypatch.setattr("kspbench.cli._run", fake_run)
+    monkeypatch.setattr("bench.cli._reset_launchpad", fake_reset)
+    monkeypatch.setattr("bench.cli._run", fake_run)
 
     exit_code = _batch(
         argparse.Namespace(

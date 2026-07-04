@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ksp": {
+      "type": "local",
+      "command": ["bun", "run", "mcp/server.ts"],
+      "environment": {
+        "KSP_RPC_HOST": "100.126.59.95",
+        "KSP_RPC_PORT": "50000",
+        "KSP_STREAM_PORT": "50001"
+      },
+      "enabled": true,
+      "timeout": 10000
+    }
+  }
+}

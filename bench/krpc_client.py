@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import json
 import socket
 import time
 from dataclasses import dataclass
+from os import environ
+from pathlib import Path
 from typing import Any
 
-from kspbench.config import KRPCConfig, Scenario
-from kspbench.telemetry import TelemetrySample
+from bench.config import Scenario
+from bench.telemetry import TelemetrySample
+
+
+@dataclass(frozen=True)
+class KRPCConfig:
+    host: str = "127.0.0.1"
+    rpc_port: int = 50000
+    stream_port: int = 50001
+
+    @classmethod
+    def from_env(cls) -> KRPCConfig:
+        opencode_env = _opencode_ksp_environment()
+        return cls(
+            host=environ.get("KSP_RPC_HOST") or opencode_env.get("KSP_RPC_HOST") or cls.host,
+            rpc_port=_config_int("KSP_RPC_PORT", cls.rpc_port, opencode_env),
+            stream_port=_config_int("KSP_STREAM_PORT", cls.stream_port, opencode_env),
+        )
 
 
 @dataclass(frozen=True)
@@ -51,7 +70,7 @@ class KRPCController:
             )
 
     @classmethod
-    def connect(cls, scenario: Scenario) -> KRPCController:
+    def connect(cls, scenario: Scenario, config: KRPCConfig | None = None) -> KRPCController:
         try:
             import krpc  # type: ignore
         except ImportError as exc:
@@ -59,11 +78,12 @@ class KRPCController:
                 "krpc Python package is not installed; install the project with the 'ksp' extra"
             ) from exc
 
+        krpc_config = config or KRPCConfig.from_env()
         conn = krpc.connect(
             name="KSP-bench",
-            address=scenario.krpc.host,
-            rpc_port=scenario.krpc.rpc_port,
-            stream_port=scenario.krpc.stream_port,
+            address=krpc_config.host,
+            rpc_port=krpc_config.rpc_port,
+            stream_port=krpc_config.stream_port,
         )
         return cls(conn, scenario)
 
@@ -215,6 +235,29 @@ def _set_unpaused(space_center: Any) -> None:
         space_center.paused = False
     elif hasattr(space_center, "game_paused"):
         space_center.game_paused = False
+
+
+def _config_int(name: str, default: int, config: dict[str, str]) -> int:
+    value = environ.get(name) or config.get(name)
+    return default if value is None else int(value)
+
+
+def _opencode_ksp_environment() -> dict[str, str]:
+    path = Path("opencode.json")
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    environment = (
+        data.get("mcp", {})
+        .get("ksp", {})
+        .get("environment", {})
+    )
+    if not isinstance(environment, dict):
+        return {}
+    return {str(key): str(value) for key, value in environment.items()}
 
 
 def _stage_resources(

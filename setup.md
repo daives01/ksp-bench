@@ -1,225 +1,102 @@
 # KSP-bench Setup
 
-This document describes the intended setup for KSP-bench v0. The goal is a stock-as-possible Kerbal Space Program 1 install with only the mods needed for programmatic control through kRPC.
-
 ## Requirements
 
-- Kerbal Space Program 1.
-- CKAN mod manager.
-- `uv` Python project manager.
-- A local clone of this repository.
+- Kerbal Space Program 1 with the kRPC mod installed and running.
+- Python 3.12 via `uv`.
+- Bun for the local MCP server.
+- OpenCode installed and authenticated.
+- A clean benchmark save with the fixed vessel on the launchpad.
 
-KSP-bench v0 targets KSP 1 because it has mature modding support and stable automation tooling.
-
-## Install KSP
-
-Install Kerbal Space Program 1 through Steam, GOG, or the direct Squad/Private Division installer.
-
-Recommended:
-
-- Use a dedicated KSP install for benchmarking.
-- Disable unrelated mods.
-- Avoid using a personal career or sandbox save for benchmark runs.
-- Keep a backup of the clean benchmark save.
-
-## Install CKAN
-
-Install CKAN from the official CKAN project:
-
-https://github.com/KSP-CKAN/CKAN
-
-After installing CKAN:
-
-1. Launch CKAN.
-2. Point it at the dedicated KSP install.
-3. Refresh the mod list.
-4. Confirm CKAN recognizes the installed KSP version.
-
-CKAN can be used through the GUI, console UI, or command line. For reproducible benchmark work, prefer keeping a committed CKAN modlist or metapackage in the repo once the exact kRPC dependency set is confirmed.
-
-## Install Required Mods
-
-Use CKAN to install:
-
-- `kRPC`
-
-CKAN should automatically select required dependencies. Keep the install otherwise stock unless KSP-bench later adds a specific required mod.
-
-Avoid adding:
-
-- MechJeb.
-- Ferram Aerospace Research.
-- Kerbal Engineer Redux.
-- Part packs.
-- Life-support mods.
-- Visual or physics overhaul mods.
-
-Those can be useful later for alternate tracks, but v0 should keep the environment minimal.
-
-After installing mods, export or record the installed CKAN identifiers and versions. The repo should eventually include something like:
-
-```text
-env/ckan/ksp-bench-v0.ckan
-```
-
-That file becomes part of the benchmark definition, alongside the fixed craft, save, Python lockfile, and scoring config.
-
-## Enable kRPC In Game
-
-1. Start KSP.
-2. Open the kRPC server window from the in-game toolbar.
-3. Start the server.
-4. Use the default local connection settings unless the harness config says otherwise.
-
-The Python harness will connect to the running game over kRPC. KSP must be open with the benchmark vessel loaded before v0 runs.
-
-## Create the v0 Save
-
-Initial manual setup:
-
-1. Start a new sandbox save named `KSP-bench-v0`.
-2. Build or import the fixed v0 rocket.
-3. Put the rocket on the launchpad.
-4. Save the game in a known clean pre-launch state.
-
-The first benchmark scenario will assume:
-
-- Body: Kerbin.
-- Launch site: KSC launchpad.
-- Goal orbit: 75 km to 85 km apoapsis, periapsis above 70 km.
-- Vessel: fixed stock rocket.
-- Crew survival: required if crewed.
-
-The exact craft file and save file should be added once the initial rocket is selected.
-
-## Python Environment With uv
-
-Use `uv` for Python version management, dependency locking, command execution, and reproducible local environments. Do not use a manually managed `venv` workflow.
-
-Install `uv` from the official Astral docs:
-
-https://docs.astral.sh/uv/
-
-Expected setup:
+## Install
 
 ```bash
-cd ~/Documents/ksp-bench
-uv python install 3.12
-uv python pin 3.12
 uv sync
 ```
 
-Once implemented, the harness should expose commands similar to:
+Install kRPC in KSP through CKAN or your usual mod workflow. Keep the benchmark
+install minimal: kRPC plus its dependencies, no flight-assist or physics-changing mods.
+
+## Configure kRPC
+
+The kRPC host and ports live in the OpenCode MCP config, not in scenario files:
+
+```json
+{
+  "mcp": {
+    "ksp": {
+      "environment": {
+        "KSP_RPC_HOST": "100.126.59.95",
+        "KSP_RPC_PORT": "50000",
+        "KSP_STREAM_PORT": "50001"
+      }
+    }
+  }
+}
+```
+
+Edit [opencode.json](/Users/ives/Documents/ksp-bench/opencode.json) if your KSP
+server uses a different host or port. The Python worker reads those same env vars.
+
+## Prepare References
+
+Populate the read-only kRPC source tree used by the OpenCode agent:
+
+```bash
+uv run kspbench prepare-agent --krpc-repo /private/tmp/kspbench-krpc
+```
+
+If `--krpc-repo` is omitted, the command uses the installed Python `krpc` package
+and any checkout found via `KSPBENCH_KRPC_REPO`, `/private/tmp/kspbench-krpc`, or
+`/tmp/kspbench-krpc`.
+
+## Run
+
+Check local setup:
 
 ```bash
 uv run kspbench doctor
+```
+
+Run a scored benchmark:
+
+```bash
 uv run kspbench run scenarios/kerbin_orbit_80km.toml --model openai/gpt-5.4
 ```
 
-`doctor` should verify that Python dependencies are installed and that kRPC is reachable.
-
-The repo should commit:
-
-- `pyproject.toml`
-- `uv.lock`
-- `.python-version`
-
-The repo should not commit `.venv/`.
-
-## Running v0
-
-Expected run flow:
-
-1. Start KSP.
-2. Load the clean `KSP-bench-v0` save.
-3. Place the fixed rocket on the launchpad.
-4. Start the kRPC server.
-5. Run the benchmark harness from this repo.
-6. Inspect the generated run artifact directory.
-
-Expected artifacts:
-
-```text
-runs/<run_id>/
-  scenario.toml
-  action_log.jsonl
-  telemetry.csv
-  telemetry_waypoints.json
-  agent_process.json
-  score.json
-  summary.txt
-```
-
-## Running OpenCode
-
-KSP-bench runs live missions through OpenCode. The harness starts a localhost
-tool bridge, generates a throwaway OpenCode workspace outside this repo, and
-exposes the bridge as custom OpenCode tools:
-
-- `ksp_observe`
-- `ksp_throttle`
-- `ksp_stage`
-- `ksp_pitch_heading`
-- `ksp_prograde`
-- `ksp_wait`
-- `ksp_execute`
-- `ksp_start_task`
-- `ksp_check_task`
-- `ksp_stop_task`
-
-The generated workspace also includes a read-only `krpc_reference/` directory.
-`opencode.json` denies all OpenCode tools by default, then allows `ksp_*` plus
-`read`, `grep`, and `glob` so the model can inspect that generated interface
-reference without shell, file editing, web fetching, or direct access to this
-workspace. The harness still records actions, full telemetry, 10-second telemetry
-waypoints, score, and an
-`agent_process.json` file with the command, stdout, stderr, return code, timeout
-status, and best-effort token/cost usage fields.
+Use the OpenCode agent interactively:
 
 ```bash
-uv run kspbench run scenarios/kerbin_orbit_80km.toml \
-  --model openai/gpt-5.4
+uv run kspbench agent scenarios/kerbin_orbit_80km.toml --model openai/gpt-5.4
 ```
 
-OpenCode is invoked with `opencode run --dir <throwaway-workspace> --agent
-kspbench`. Pass additional CLI flags with repeated `--agent-arg`, for
-example:
+Or start OpenCode yourself from the repo root and select the `ksp` agent:
 
 ```bash
-uv run kspbench run scenarios/kerbin_orbit_80km.toml \
-  --agent-arg=--format \
-  --agent-arg json
+opencode . --agent ksp
 ```
 
-OpenCode must already be installed and authenticated before the run starts.
+That direct path starts `mcp/server.ts` through Bun using [opencode.json](/Users/ives/Documents/ksp-bench/opencode.json).
+If `KSPBENCH_RUN_DIR` is not set, the MCP worker creates a run directory under
+`runs/`.
+
+## Artifacts
+
+Runs write:
+
+- `action_log.jsonl`
+- `telemetry.jsonl`
+- `telemetry.csv`
+- `telemetry_waypoints.json`
+- `agent_process.json`
+- `score.json`
+- `summary.txt`
 
 ## Troubleshooting
 
-If the harness cannot connect:
-
-- Confirm KSP is running.
-- Confirm the kRPC server is started in game.
-- Confirm the host and port match the harness config.
-- Confirm the Python kRPC package version is compatible with the installed kRPC mod.
-
-If runs differ between attempts:
-
-- Reload the same clean pre-launch save before each run.
-- Confirm the vessel and staging are unchanged.
-- Confirm no extra physics or part mods are installed.
-- Keep the benchmark timeout and physics settings fixed.
-
-If staging behaves unexpectedly:
-
-- Inspect the rocket in the VAB.
-- Confirm engines, boosters, decouplers, and parachutes are assigned to the intended stages.
-- Save the corrected craft and update the benchmark fixture.
-
-## Notes for Later Versions
-
-Vehicle creation is intentionally out of scope for v0. Later versions can add:
-
-- Parameterized craft templates.
-- A constrained craft-spec DSL.
-- Generated `.craft` files.
-- Separate design-only and design-plus-flight tracks.
+- If connection fails, confirm KSP is running, kRPC is started in game, and
+  `KSP_RPC_HOST` / `KSP_RPC_PORT` / `KSP_STREAM_PORT` match your server.
+- If OpenCode cannot see KSP tools, run `bun run mcp/server.ts` and send an MCP
+  `tools/list` request, or run `opencode agent list` from the repo root.
+- If the direct agent uses the wrong Python, set `KSPBENCH_PYTHON` to the desired
+  interpreter, for example `.venv/bin/python`.

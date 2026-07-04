@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from kspbench.config import Scenario
-from kspbench.telemetry import TelemetrySample
+from bench.config import Scenario
+from bench.telemetry import TelemetrySample
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kspbench.config import load_scenario
+from bench.config import load_scenario
 
 
 def test_loads_example_scenario() -> None:

@@ -24,13 +24,6 @@ class ScoringConfig:
 
 
 @dataclass(frozen=True)
-class KRPCConfig:
-    host: str
-    rpc_port: int
-    stream_port: int
-
-
-@dataclass(frozen=True)
 class Scenario:
     instance_id: str
     benchmark_version: str
@@ -39,7 +32,6 @@ class Scenario:
     timeout_s: float
     target_orbit: TargetOrbit
     scoring: ScoringConfig
-    krpc: KRPCConfig
     source_path: Path | None = None
 
     @classmethod
@@ -51,7 +43,6 @@ class Scenario:
             "timeout_s",
             "target_orbit",
             "scoring",
-            "krpc",
         ]
         missing = [key for key in required if key not in data]
         if missing:
@@ -60,7 +51,6 @@ class Scenario:
 
         target = _expect_mapping(data["target_orbit"], "target_orbit")
         scoring = _expect_mapping(data["scoring"], "scoring")
-        krpc = _expect_mapping(data["krpc"], "krpc")
 
         return cls(
             instance_id=_expect_str(data["instance_id"], "instance_id"),
@@ -96,11 +86,6 @@ class Scenario:
                 invalid_action_penalty=_expect_number(
                     scoring["invalid_action_penalty"], "scoring.invalid_action_penalty"
                 ),
-            ),
-            krpc=KRPCConfig(
-                host=_expect_str(krpc["host"], "krpc.host"),
-                rpc_port=int(_expect_number(krpc["rpc_port"], "krpc.rpc_port")),
-                stream_port=int(_expect_number(krpc["stream_port"], "krpc.stream_port")),
             ),
             source_path=source_path,
         )
