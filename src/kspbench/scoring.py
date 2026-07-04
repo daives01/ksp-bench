@@ -75,7 +75,6 @@ def score_trace(
     score += 20.0 if milestones["periapsis_above_70km"] else 0.0
     score += _orbit_quality_points(scenario, final)
     score += _fuel_bonus(scenario, final)
-    score -= invalid_actions * scenario.scoring.invalid_action_penalty
     score = max(0.0, min(100.0, round(score, 2)))
 
     diagnostics: dict[str, float | int | bool | str] = {
@@ -167,8 +166,6 @@ def _fuel_bonus(scenario: Scenario, final: TelemetrySample) -> float:
 def _failure_reason(
     scenario: Scenario, final: TelemetrySample, elapsed: float, invalid_actions: int
 ) -> str:
-    if invalid_actions:
-        return "invalid_actions"
     if not final.intact:
         return "vessel_not_intact"
     if not final.controllable:

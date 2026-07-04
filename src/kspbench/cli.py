@@ -7,9 +7,14 @@ import sys
 from pathlib import Path
 
 from kspbench import __version__
-from kspbench.agent_adapters import OpenCodeAgentAdapter, ToolBridgeServer
+from kspbench.agent_adapters import (
+    ExternalAgentResult,
+    OpenCodeAgentAdapter,
+    ToolBridgeServer,
+    extract_usage,
+)
 from kspbench.artifacts import RunArtifacts, default_run_id
-from kspbench.config import load_scenario
+from kspbench.config import Scenario, load_scenario
 from kspbench.krpc_client import KRPCController, check_krpc_package, check_krpc_reachable
 from kspbench.live import LiveKRPCTools
 from kspbench.scoring import score_trace
@@ -77,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds between telemetry samples during sleep/wait helpers",
     )
     run.add_argument(
+        "--telemetry-waypoint-interval",
+        type=float,
+        default=10.0,
+        help="mission seconds between downsampled telemetry waypoints",
+    )
+    run.add_argument(
         "--warp-threshold",
         type=float,
         default=10.0,
@@ -138,10 +149,11 @@ def _run(args: argparse.Namespace) -> int:
     artifacts.copy_scenario(scenario)
     artifacts.write_run_config(
         agent,
-        tool_api_version="0.2.0",
+        tool_api_version="0.4.0",
         execution_timeout_s=args.execution_timeout,
         max_sleep_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
+        telemetry_waypoint_interval_s=args.telemetry_waypoint_interval,
         warp_threshold_s=args.warp_threshold,
         time_warp=not args.no_time_warp,
         agent_timeout_s=args.agent_timeout or scenario.timeout_s,
@@ -154,6 +166,17 @@ def _run(args: argparse.Namespace) -> int:
     except Exception as exc:
         artifacts.append_event(
             {"type": "run_failed", "reason": "no_connection", "detail": str(exc)}
+        )
+        _finalize_run(
+            artifacts=artifacts,
+            run_id=run_id,
+            scenario=scenario,
+            agent=agent,
+            telemetry=[],
+            invalid_actions=0,
+            action_count=0,
+            exit_code=2,
+            telemetry_waypoint_interval=args.telemetry_waypoint_interval,
         )
         print(f"Could not start live kRPC run: {exc}")
         return 2
@@ -170,6 +193,7 @@ def _run(args: argparse.Namespace) -> int:
         live_events=True,
     )
     exit_code = 0
+    result: ExternalAgentResult | None = None
 
     try:
         tools.get_telemetry()
@@ -181,16 +205,6 @@ def _run(args: argparse.Namespace) -> int:
                 timeout_s=args.agent_timeout or scenario.timeout_s,
                 stream_output=not args.no_stream_agent,
             )
-        artifacts.write_json(
-            "agent_process.json",
-            {
-                "command": result.command,
-                "returncode": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "timed_out": result.timed_out,
-            },
-        )
         if result.returncode != 0:
             tools.invalid_actions += 1
             artifacts.append_event(
@@ -208,20 +222,86 @@ def _run(args: argparse.Namespace) -> int:
         print(f"OpenCode agent failed: {exc}")
         exit_code = 3
 
-    try:
-        tools.record_telemetry(controller.read_telemetry())
-    except Exception as exc:
-        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+    if result is not None:
+        artifacts.write_json(
+            "agent_process.json",
+            {
+                "command": result.command,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "timed_out": result.timed_out,
+                "usage": extract_usage(result.stdout, result.stderr),
+            },
+        )
+    else:
+        artifacts.write_json(
+            "agent_process.json",
+            {
+                "command": [],
+                "returncode": None,
+                "stdout": "",
+                "stderr": "",
+                "timed_out": False,
+                "usage": None,
+            },
+        )
 
-    artifacts.write_telemetry(tools.telemetry)
+    if tools.termination_reason and tools.termination_reason.startswith("executeKRPC exceeded"):
+        artifacts.append_event(
+            {
+                "type": "telemetry_read_skipped",
+                "reason": "execute_krpc_timeout",
+            }
+        )
+    else:
+        try:
+            with tools.krpc_lock:
+                tools.record_telemetry(controller.read_telemetry())
+        except Exception as exc:
+            artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+
+    score = _finalize_run(
+        artifacts=artifacts,
+        run_id=run_id,
+        scenario=scenario,
+        agent=agent,
+        telemetry=tools.telemetry,
+        invalid_actions=tools.invalid_actions,
+        action_count=len(tools.actions),
+        exit_code=exit_code,
+        telemetry_waypoint_interval=args.telemetry_waypoint_interval,
+    )
+    print(f"Wrote run artifacts to {artifacts.run_dir}")
+    print(f"success={score.success} score={score.score} failure_reason={score.failure_reason}")
+    return exit_code
+
+
+def _finalize_run(
+    *,
+    artifacts: RunArtifacts,
+    run_id: str,
+    scenario: Scenario,
+    agent: dict[str, str | None],
+    telemetry: list[TelemetrySample],
+    invalid_actions: int,
+    action_count: int,
+    exit_code: int,
+    telemetry_waypoint_interval: float,
+):
+    artifacts.write_telemetry(telemetry)
+    artifacts.write_telemetry_waypoints(
+        telemetry,
+        interval_s=telemetry_waypoint_interval,
+    )
     score = score_trace(
         run_id=run_id,
         scenario=scenario,
-        telemetry=tools.telemetry,
+        telemetry=telemetry,
         agent=agent,
         harness_version=__version__,
-        invalid_actions=tools.invalid_actions,
-        action_count=len(tools.actions),
+        invalid_actions=invalid_actions,
+        action_count=action_count,
     )
     artifacts.write_score(score)
     artifacts.write_summary(score)
@@ -233,18 +313,21 @@ def _run(args: argparse.Namespace) -> int:
             "exit_code": exit_code,
         }
     )
-    print(f"Wrote run artifacts to {artifacts.run_dir}")
-    print(f"success={score.success} score={score.score} failure_reason={score.failure_reason}")
-    return exit_code
+    return score
 
 
 def _score(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     scenario = load_scenario(run_dir / "scenario.toml")
-    telemetry = _read_telemetry(run_dir / "telemetry.csv")
+    telemetry_path = run_dir / "telemetry.csv"
+    telemetry = _read_telemetry(telemetry_path) if telemetry_path.exists() else []
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     actions = _read_jsonl(run_dir / "action_log.jsonl")
-    invalid_actions = sum(1 for action in actions if not action.get("allowed", True))
+    invalid_actions = sum(
+        1
+        for action in actions
+        if not action.get("allowed", True) or action.get("ok") is False
+    )
     result = score_trace(
         run_id=run_dir.name,
         scenario=scenario,
@@ -255,6 +338,15 @@ def _score(args: argparse.Namespace) -> int:
         action_count=len(actions),
     )
     artifacts = RunArtifacts.open(run_dir)
+    if not telemetry_path.exists():
+        artifacts.append_event(
+            {
+                "type": "telemetry_read_missing",
+                "path": str(telemetry_path),
+            }
+        )
+        artifacts.write_telemetry([])
+        artifacts.write_telemetry_waypoints([])
     artifacts.write_score(result)
     artifacts.write_summary(result)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

@@ -73,6 +73,21 @@ class RunArtifacts:
             for sample in samples:
                 writer.writerow(sample.to_dict())
 
+    def write_telemetry_waypoints(
+        self,
+        samples: list[TelemetrySample],
+        *,
+        interval_s: float = 10.0,
+    ) -> None:
+        waypoints = telemetry_waypoints(samples, interval_s=interval_s)
+        self.write_json(
+            "telemetry_waypoints.json",
+            {
+                "interval_s": interval_s,
+                "samples": [sample.to_dict() for sample in waypoints],
+            },
+        )
+
     def write_score(self, score: ScoreResult) -> None:
         self.write_json("score.json", score.to_dict())
 
@@ -123,3 +138,29 @@ def _file_sha256(path: Path) -> str | None:
     if not path.exists():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def telemetry_waypoints(
+    samples: list[TelemetrySample],
+    *,
+    interval_s: float = 10.0,
+) -> list[TelemetrySample]:
+    if interval_s <= 0:
+        raise ValueError("interval_s must be positive")
+    if not samples:
+        return []
+
+    waypoints: list[TelemetrySample] = []
+    next_met = samples[0].mission_elapsed_s
+    for sample in samples:
+        if not waypoints:
+            waypoints.append(sample)
+            next_met = sample.mission_elapsed_s + interval_s
+            continue
+        if sample.mission_elapsed_s >= next_met:
+            waypoints.append(sample)
+            while next_met <= sample.mission_elapsed_s:
+                next_met += interval_s
+    if waypoints[-1] is not samples[-1]:
+        waypoints.append(samples[-1])
+    return waypoints

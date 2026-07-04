@@ -63,3 +63,31 @@ def test_reports_periapsis_failure() -> None:
 
     assert result.success is False
     assert result.failure_reason == "periapsis_below_target"
+
+
+def test_invalid_actions_are_diagnostics_not_score_penalties() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    clean = score_trace(
+        run_id="clean",
+        scenario=scenario,
+        telemetry=[_sample()],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+        invalid_actions=0,
+        action_count=1,
+    )
+    noisy = score_trace(
+        run_id="noisy",
+        scenario=scenario,
+        telemetry=[_sample()],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+        invalid_actions=12,
+        action_count=13,
+    )
+
+    assert noisy.success is True
+    assert noisy.failure_reason is None
+    assert noisy.score == clean.score
+    assert noisy.diagnostics["invalid_actions"] == 12
