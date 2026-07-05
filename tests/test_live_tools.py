@@ -466,6 +466,19 @@ def test_vehicle_selection_is_stateful(tmp_path) -> None:
     assert controller.conn.space_center.active_vessel is other
 
 
+def test_reset_launchpad_reverts_through_controller(tmp_path) -> None:
+    controller = FakeController()
+    controller.vessel.situation = "flying"
+    controller.vessel.met = 12.0
+    session = _session(tmp_path, controller=controller)
+
+    result = session.reset_launchpad(wait_s=0.0)
+
+    assert result["ok"] is True
+    assert result["vehicle_name"] == "Kerbal X"
+    assert result["telemetry"]["situation"] == "pre_launch"
+
+
 def test_wait_stops_when_vessel_is_destroyed(tmp_path) -> None:
     session = _session(tmp_path, controller=CrashedController(), poll_interval_s=0.01)
 

@@ -51,6 +51,17 @@ const tools: ToolDefinition[] = [
     inputSchema: objectSchema({}),
   },
   {
+    name: "reset_launchpad",
+    description: "Revert KSP to the unpaused benchmark vessel on the launchpad.",
+    inputSchema: objectSchema({
+      wait_s: {
+        type: "number",
+        minimum: 0,
+        description: "Seconds to wait for the reverted vessel to become active. Defaults to 2.",
+      },
+    }, []),
+  },
+  {
     name: "set_vehicle",
     description: "Select the vehicle this MCP session controls by list index or exact name.",
     inputSchema: objectSchema({
@@ -134,7 +145,11 @@ const tools: ToolDefinition[] = [
   },
 ]
 
-const toolNames = new Set(tools.map((tool) => tool.name))
+const privilegedToolNames = new Set(["reset_launchpad"])
+const exposedTools = tools.filter(
+  (tool) => !privilegedToolNames.has(tool.name) || resetToolEnabled(),
+)
+const toolNames = new Set(exposedTools.map((tool) => tool.name))
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
 let worker: WorkerClient | undefined
@@ -302,7 +317,7 @@ async function handleRequest(request: RpcRequest): Promise<Record<string, unknow
     case "ping":
       return {}
     case "tools/list":
-      return { tools }
+      return { tools: exposedTools }
     case "tools/call":
       return callTool(request.params ?? {})
     case "resources/list":
@@ -321,6 +336,7 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     throw new Error(`unknown KSP tool: ${String(name)}`)
   }
   if (!isObject(args)) throw new Error("tool arguments must be an object")
+  validateToolArguments(name, args)
   worker ??= new WorkerClient()
   let result: unknown
   try {
@@ -352,6 +368,118 @@ function objectSchema(
     required,
     additionalProperties: false,
   }
+}
+
+function resetToolEnabled(): boolean {
+  return truthyEnv(process.env.KSPBENCH_ENABLE_RESET_TOOL)
+}
+
+function truthyEnv(value: string | undefined): boolean {
+  return value === "1" || value === "true" || value === "yes" || value === "on"
+}
+
+function validateToolArguments(name: string, args: Record<string, unknown>): void {
+  switch (name) {
+    case "observe":
+    case "stage":
+    case "list_vehicles":
+      rejectUnexpected(name, args, [])
+      return
+    case "reset_launchpad":
+      rejectUnexpected(name, args, ["wait_s"])
+      if (args.wait_s !== undefined && args.wait_s !== null) {
+        const wait = requiredNumber(args, "wait_s")
+        if (wait < 0) throw new Error("reset_launchpad.wait_s must be non-negative")
+      }
+      return
+    case "throttle": {
+      rejectUnexpected(name, args, ["value"])
+      const value = requiredNumber(args, "value")
+      if (value < 0 || value > 1) throw new Error("throttle.value must be between 0 and 1")
+      return
+    }
+    case "set_vehicle": {
+      rejectUnexpected(name, args, ["index", "name", "make_active"])
+      const hasIndex = args.index !== undefined && args.index !== null
+      const hasName = args.name !== undefined && args.name !== null
+      if (hasIndex === hasName) throw new Error("set_vehicle requires exactly one of index or name")
+      if (hasIndex) requiredInteger(args, "index")
+      if (hasName && typeof args.name !== "string") throw new Error("set_vehicle.name must be a string")
+      if (
+        args.make_active !== undefined &&
+        args.make_active !== null &&
+        typeof args.make_active !== "boolean"
+      ) {
+        throw new Error("set_vehicle.make_active must be a boolean")
+      }
+      return
+    }
+    case "attitude": {
+      rejectUnexpected(name, args, ["mode", "pitch", "heading", "reference_frame"])
+      if (typeof args.mode !== "string") throw new Error("attitude.mode must be a string")
+      if (args.mode === "pitch_heading") {
+        requiredNumber(args, "pitch")
+        requiredNumber(args, "heading")
+      }
+      if (
+        args.reference_frame !== undefined &&
+        args.reference_frame !== null &&
+        typeof args.reference_frame !== "string"
+      ) {
+        throw new Error("attitude.reference_frame must be a string")
+      }
+      return
+    }
+    case "wait": {
+      rejectUnexpected(name, args, ["seconds"])
+      const seconds = requiredNumber(args, "seconds")
+      if (seconds < 0) throw new Error("wait.seconds must be non-negative")
+      return
+    }
+    case "execute_python":
+    case "start_task": {
+      rejectUnexpected(name, args, ["code", "timeout_s"])
+      if (typeof args.code !== "string") throw new Error(`${name}.code must be a string`)
+      if (args.timeout_s !== undefined && args.timeout_s !== null) {
+        const timeout = requiredNumber(args, "timeout_s")
+        if (timeout < 0) throw new Error(`${name}.timeout_s must be non-negative`)
+      }
+      return
+    }
+    case "check_task":
+    case "stop_task":
+      rejectUnexpected(name, args, ["task_id"])
+      if (args.task_id !== undefined && args.task_id !== null && typeof args.task_id !== "string") {
+        throw new Error(`${name}.task_id must be a string`)
+      }
+      return
+    default:
+      throw new Error(`unknown KSP tool: ${name}`)
+  }
+}
+
+function rejectUnexpected(
+  toolName: string,
+  args: Record<string, unknown>,
+  allowed: string[],
+): void {
+  for (const key of Object.keys(args)) {
+    if (!allowed.includes(key)) throw new Error(`${toolName}.${key} is not a supported argument`)
+  }
+}
+
+function requiredNumber(args: Record<string, unknown>, key: string): number {
+  const value = args[key]
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${key} must be a finite number`)
+  }
+  return value
+}
+
+function requiredInteger(args: Record<string, unknown>, key: string): number {
+  const value = requiredNumber(args, key)
+  if (!Number.isInteger(value)) throw new Error(`${key} must be an integer`)
+  return value
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

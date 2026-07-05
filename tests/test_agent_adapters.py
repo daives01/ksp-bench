@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 from bench.agent_adapters import (
@@ -35,6 +36,23 @@ def test_opencode_command_uses_project_ksp_agent(tmp_path) -> None:
     assert "--format" in command
     assert "json" in command
     assert command[-1] == "fly the rocket"
+
+
+def test_opencode_environment_disables_privileged_reset_tool(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KSPBENCH_ENABLE_RESET_TOOL", "1")
+    adapter = OpenCodeAgentAdapter(model="openai/gpt-5.4", project_root=tmp_path)
+    scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
+
+    env = adapter._environment(
+        scenario=scenario,
+        run_dir=None,
+        execution_timeout_s=15.0,
+        task_timeout_s=180.0,
+        max_sleep_s=240.0,
+        poll_interval_s=0.5,
+    )
+
+    assert env["KSPBENCH_ENABLE_RESET_TOOL"] == "0"
 
 
 def test_prepare_opencode_workspace_copies_literal_krpc_sources(tmp_path) -> None:
@@ -133,6 +151,63 @@ def test_ksp_mcp_lists_flight_tools() -> None:
         "check_task",
         "stop_task",
     } <= names
+    assert "reset_launchpad" not in names
+
+
+def test_ksp_mcp_lists_reset_tool_only_when_enabled() -> None:
+    payload = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+            "",
+        ]
+    )
+
+    env = {**os.environ, "KSPBENCH_ENABLE_RESET_TOOL": "1"}
+    completed = subprocess.run(
+        ["bun", "run", "mcp/server.ts"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    names = {tool["name"] for tool in responses[1]["result"]["tools"]}
+    assert "reset_launchpad" in names
+
+
+def test_ksp_mcp_rejects_reset_tool_when_disabled() -> None:
+    payload = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "reset_launchpad", "arguments": {}},
+                }
+            ),
+            "",
+        ]
+    )
+
+    completed = subprocess.run(
+        ["bun", "run", "mcp/server.ts"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    assert responses[1]["error"]["message"] == "unknown KSP tool: reset_launchpad"
 
 
 def test_extract_usage_parses_common_opencode_text() -> None:

@@ -180,6 +180,7 @@ class OpenCodeAgentAdapter:
         env["KSPBENCH_TASK_TIMEOUT"] = str(task_timeout_s)
         env["KSPBENCH_MAX_SLEEP"] = str(max_sleep_s)
         env["KSPBENCH_POLL_INTERVAL"] = str(poll_interval_s)
+        env["KSPBENCH_ENABLE_RESET_TOOL"] = "0"
         env.setdefault("KSPBENCH_PYTHON", sys.executable)
         if run_dir is not None:
             env["KSPBENCH_RUN_DIR"] = str(run_dir.resolve())

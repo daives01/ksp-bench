@@ -92,6 +92,11 @@ class Worker:
             return self.tools.stage()
         if method == "list_vehicles":
             return self.tools.list_vehicles()
+        if method == "reset_launchpad":
+            if not _truthy_env("KSPBENCH_ENABLE_RESET_TOOL"):
+                raise PermissionError("reset_launchpad is disabled for this MCP session")
+            self.selected_vehicle = None
+            return self.tools.reset_launchpad(wait_s=_optional_number(params, "wait_s") or 2.0)
         if method == "set_vehicle":
             return self.tools.set_vehicle(
                 name=_optional_str(params, "name"),
@@ -284,6 +289,10 @@ def _optional_bool(params: dict[str, Any], key: str, *, default: bool) -> bool:
 def _float_env(name: str, default: float) -> float:
     value = os.environ.get(name)
     return default if value is None else float(value)
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
 
 
 if __name__ == "__main__":

@@ -328,6 +328,7 @@ def _agent(args: argparse.Namespace) -> int:
     env["KSPBENCH_TASK_TIMEOUT"] = str(args.task_timeout)
     env["KSPBENCH_MAX_SLEEP"] = str(args.max_sleep)
     env["KSPBENCH_POLL_INTERVAL"] = str(args.poll_interval)
+    env["KSPBENCH_ENABLE_RESET_TOOL"] = "0"
     env.setdefault("KSPBENCH_PYTHON", sys.executable)
     print(f"Starting OpenCode KSP agent. Artifacts: {artifacts.run_dir}")
     completed = subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=False)
