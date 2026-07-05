@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -173,8 +174,8 @@ def main() -> int:
 def _artifacts(scenario: Any, run_dir: str | None) -> RunArtifacts:
     if run_dir:
         return RunArtifacts.open(Path(run_dir))
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    artifacts = RunArtifacts.create("runs", f"{stamp}_opencode_agent")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    artifacts = RunArtifacts.create("runs", f"{stamp}_{uuid.uuid4().hex[:8]}_opencode_agent")
     artifacts.write_manifest(
         scenario,
         {"name": "ksp", "model": None, "adapter": "opencode_mcp_direct"},
