@@ -96,6 +96,14 @@ class FakeController:
             "current_stage": 1,
             "throttle": self.vessel.control.throttle,
             "current_stage_resources": {"LiquidFuel": 42.0, "Oxidizer": 50.0},
+            "next_stage": {
+                "stage": 0,
+                "resources": {"LiquidFuel": 0.0, "Oxidizer": 0.0},
+                "activate_engines": [],
+                "decouple_parts": [],
+                "engine_count": 0,
+                "decoupler_count": 0,
+            },
         }
 
     def list_vessels(self) -> dict[str, object]:
@@ -138,6 +146,10 @@ class FakeController:
             "selected": {"index": index, "name": vessel.name, "current": True},
             "made_active": make_active,
         }
+
+    def prepare_for_launchpad_run(self, *, wait_s: float = 2.0) -> None:
+        self.vessel.situation = "pre_launch"
+        self.vessel.met = 0.0
 
     def close(self) -> None:
         return
@@ -241,6 +253,7 @@ def test_observe_returns_telemetry_vehicle_and_target(tmp_path) -> None:
     assert result["ok"] is True
     assert result["telemetry"]["body"] == "Kerbin"
     assert result["vehicle"]["current_stage_resources"]["LiquidFuel"] == 42.0
+    assert result["vehicle"]["next_stage"]["stage"] == 0
     assert result["target_orbit"]["periapsis_min_m"] == 70000
 
 

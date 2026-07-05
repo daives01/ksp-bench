@@ -139,6 +139,8 @@ class KRPCController:
         resource_names = ("LiquidFuel", "Oxidizer", "SolidFuel", "ElectricCharge", "MonoPropellant")
 
         stages = _stage_resources(vessel, current_stage, resource_names)
+        engines = _engines(vessel)
+        decouplers = _decouplers(vessel)
 
         return {
             "name": _safe_value(lambda: vessel.name, default="unknown"),
@@ -175,10 +177,16 @@ class KRPCController:
                 for resource_name in resource_names
             },
             "current_stage_resources": _current_stage_resources(stages, current_stage),
+            "next_stage": _next_stage_summary(
+                current_stage=current_stage,
+                stages=stages,
+                engines=engines,
+                decouplers=decouplers,
+            ),
             "stages": stages,
             "active_engines": _active_engines(vessel),
-            "engines": _engines(vessel),
-            "decouplers": _decouplers(vessel),
+            "engines": engines,
+            "decouplers": decouplers,
         }
 
     def list_vessels(self) -> dict[str, Any]:
@@ -346,6 +354,30 @@ def _current_stage_resources(
             if isinstance(resources, dict):
                 return {str(name): float(amount) for name, amount in resources.items()}
     return {}
+
+
+def _next_stage_summary(
+    *,
+    current_stage: int,
+    stages: list[dict[str, Any]],
+    engines: list[dict[str, Any]],
+    decouplers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if current_stage <= 0:
+        return None
+    stage_number = current_stage - 1
+    stage_engines = [engine for engine in engines if engine.get("stage") == stage_number]
+    stage_decouplers = [
+        decoupler for decoupler in decouplers if decoupler.get("stage") == stage_number
+    ]
+    return {
+        "stage": stage_number,
+        "resources": _current_stage_resources(stages, stage_number),
+        "activate_engines": stage_engines,
+        "decouple_parts": stage_decouplers,
+        "engine_count": len(stage_engines),
+        "decoupler_count": len(stage_decouplers),
+    }
 
 
 def _active_engines(vessel: Any) -> list[dict[str, Any]]:
