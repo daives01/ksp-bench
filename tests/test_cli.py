@@ -134,7 +134,9 @@ def test_score_handles_missing_telemetry_csv(tmp_path) -> None:
 
     assert exit_code == 0
     score = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
-    assert score["failure_reason"] == "no_telemetry"
+    assert "success" not in score
+    assert "failure_reason" not in score
+    assert score["final_orbit"]["situation"] == "no_telemetry"
     assert score["diagnostics"]["invalid_actions"] == 1
     assert (run_dir / "telemetry.csv").exists()
     assert (run_dir / "telemetry_waypoints.json").exists()

@@ -1,6 +1,6 @@
 # KSP-bench
 
-KSP-bench is a small benchmark harness for testing whether agents can fly a fixed Kerbal Space Program 1 mission through kRPC. The v0 task is a fixed-rocket launch from Kerbin into low orbit: reach an apoapsis between 75 km and 85 km, raise periapsis above 70 km, and keep the vessel intact and controllable.
+KSP-bench is a small benchmark harness for testing whether agents can fly a fixed Kerbal Space Program 1 mission through kRPC. The v0 task is a fixed-rocket launch from Kerbin into low orbit: fly the Kerbal 1 to an 80 km orbit, keep periapsis above 70 km for a stable orbit, and keep the vessel intact and controllable.
 
 The repo is intentionally split into a few durable parts:
 

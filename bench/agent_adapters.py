@@ -22,8 +22,8 @@ to the requested orbit.
 
 Mission target:
 - Body: {body}
-- Apoapsis: {apoapsis_min_m:.0f}m to {apoapsis_max_m:.0f}m
-- Periapsis: at least {periapsis_min_m:.0f}m
+- Target orbit: {target_altitude_m:.0f}m apoapsis and {target_altitude_m:.0f}m periapsis
+- Stable orbit floor: periapsis at least {stable_periapsis_min_m:.0f}m
 - Mission timeout: {timeout_s:.0f}s wall clock
 
 Use the available KSP tools to observe or select the vessel, control throttle/staging/autopilot,
@@ -347,9 +347,8 @@ def _source_index(counts: dict[str, int]) -> str:
 def build_agent_prompt(*, scenario: Scenario) -> str:
     return AGENT_PROMPT_TEMPLATE.format(
         body=scenario.body,
-        apoapsis_min_m=scenario.target_orbit.apoapsis_min_m,
-        apoapsis_max_m=scenario.target_orbit.apoapsis_max_m,
-        periapsis_min_m=scenario.target_orbit.periapsis_min_m,
+        target_altitude_m=scenario.target_orbit.altitude_m,
+        stable_periapsis_min_m=scenario.target_orbit.stable_periapsis_min_m,
         timeout_s=scenario.timeout_s,
     )
 

@@ -48,7 +48,11 @@ def test_writes_score_and_summary(tmp_path: Path) -> None:
     artifacts.write_summary(result)
 
     score = json.loads((tmp_path / "run-1" / "score.json").read_text(encoding="utf-8"))
-    assert score["failure_reason"] == "periapsis_below_target"
+    assert "success" not in score
+    assert "failure_reason" not in score
+    assert score["final_orbit"]["apoapsis_m"] == 10000.0
+    assert score["fuel_remaining"]["liquid_fuel"] == 100.0
+    assert score["time"]["mission_elapsed_s"] == 10.0
     assert (tmp_path / "run-1" / "telemetry.csv").exists()
     waypoints = json.loads(
         (tmp_path / "run-1" / "telemetry_waypoints.json").read_text(encoding="utf-8")

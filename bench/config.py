@@ -8,9 +8,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class TargetOrbit:
-    apoapsis_min_m: float
-    apoapsis_max_m: float
-    periapsis_min_m: float
+    altitude_m: float
+    stable_periapsis_min_m: float
 
 
 @dataclass(frozen=True)
@@ -20,7 +19,6 @@ class ScoringConfig:
     reached_space_m: float
     target_orbit_points: float
     fuel_bonus_points: float
-    invalid_action_penalty: float
 
 
 @dataclass(frozen=True)
@@ -59,14 +57,9 @@ class Scenario:
             vessel_name=_expect_optional_str(data.get("vessel_name"), "vessel_name"),
             timeout_s=_expect_positive_number(data["timeout_s"], "timeout_s"),
             target_orbit=TargetOrbit(
-                apoapsis_min_m=_expect_number(
-                    target["apoapsis_min_m"], "target_orbit.apoapsis_min_m"
-                ),
-                apoapsis_max_m=_expect_number(
-                    target["apoapsis_max_m"], "target_orbit.apoapsis_max_m"
-                ),
-                periapsis_min_m=_expect_number(
-                    target["periapsis_min_m"], "target_orbit.periapsis_min_m"
+                altitude_m=_expect_number(target["altitude_m"], "target_orbit.altitude_m"),
+                stable_periapsis_min_m=_expect_number(
+                    target["stable_periapsis_min_m"], "target_orbit.stable_periapsis_min_m"
                 ),
             ),
             scoring=ScoringConfig(
@@ -83,18 +76,15 @@ class Scenario:
                 fuel_bonus_points=_expect_number(
                     scoring["fuel_bonus_points"], "scoring.fuel_bonus_points"
                 ),
-                invalid_action_penalty=_expect_number(
-                    scoring["invalid_action_penalty"], "scoring.invalid_action_penalty"
-                ),
             ),
             source_path=source_path,
         )
 
     def validate(self) -> None:
-        if self.target_orbit.apoapsis_max_m <= self.target_orbit.apoapsis_min_m:
-            raise ValueError("target_orbit.apoapsis_max_m must exceed apoapsis_min_m")
-        if self.target_orbit.periapsis_min_m <= 0:
-            raise ValueError("target_orbit.periapsis_min_m must be positive")
+        if self.target_orbit.altitude_m <= 0:
+            raise ValueError("target_orbit.altitude_m must be positive")
+        if self.target_orbit.stable_periapsis_min_m <= 0:
+            raise ValueError("target_orbit.stable_periapsis_min_m must be positive")
 
 
 def load_scenario(path: str | Path) -> Scenario:

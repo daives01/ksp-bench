@@ -113,9 +113,8 @@ class FlightSession:
                 "telemetry": sample.to_dict(),
                 "vehicle": vehicle,
                 "target_orbit": {
-                    "apoapsis_min_m": self.scenario.target_orbit.apoapsis_min_m,
-                    "apoapsis_max_m": self.scenario.target_orbit.apoapsis_max_m,
-                    "periapsis_min_m": self.scenario.target_orbit.periapsis_min_m,
+                    "altitude_m": self.scenario.target_orbit.altitude_m,
+                    "stable_periapsis_min_m": self.scenario.target_orbit.stable_periapsis_min_m,
                 },
                 "terminated": self.terminated,
                 "termination_reason": self.termination_reason,
@@ -437,8 +436,8 @@ class FlightSession:
                     "mission_elapsed_s": sample.mission_elapsed_s,
                     "apoapsis_m": sample.apoapsis_m,
                     "periapsis_m": sample.periapsis_m,
-                    "apoapsis_target_max_m": self.scenario.target_orbit.apoapsis_max_m,
-                    "periapsis_target_min_m": self.scenario.target_orbit.periapsis_min_m,
+                    "target_altitude_m": self.scenario.target_orbit.altitude_m,
+                    "stable_periapsis_min_m": self.scenario.target_orbit.stable_periapsis_min_m,
                 }
             )
         reason = self._terminal_reason(sample)
@@ -679,8 +678,8 @@ class FlightSession:
         if self._orbit_diverged:
             return False
         diverged = (
-            sample.apoapsis_m > self.scenario.target_orbit.apoapsis_max_m * 5
-            and sample.periapsis_m < self.scenario.target_orbit.periapsis_min_m
+            sample.apoapsis_m > self.scenario.target_orbit.altitude_m * 5
+            and sample.periapsis_m < self.scenario.target_orbit.stable_periapsis_min_m
         )
         self._orbit_diverged = diverged
         return diverged
@@ -819,9 +818,8 @@ class FlightSession:
             "telemetry": telemetry,
             "vehicle": vehicle,
             "target_orbit": {
-                "apoapsis_min_m": self.scenario.target_orbit.apoapsis_min_m,
-                "apoapsis_max_m": self.scenario.target_orbit.apoapsis_max_m,
-                "periapsis_min_m": self.scenario.target_orbit.periapsis_min_m,
+                "altitude_m": self.scenario.target_orbit.altitude_m,
+                "stable_periapsis_min_m": self.scenario.target_orbit.stable_periapsis_min_m,
             },
             "terminated": self.terminated,
             "termination_reason": self.termination_reason,

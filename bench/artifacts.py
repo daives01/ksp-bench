@@ -104,13 +104,15 @@ class RunArtifacts:
         lines = [
             f"Run: {score.run_id}",
             f"Instance: {score.instance_id}",
-            f"Success: {score.success}",
             f"Score: {score.score}",
-            f"Failure reason: {score.failure_reason or 'none'}",
             "",
-            "Milestones:",
+            "Final orbit:",
         ]
-        lines.extend(f"- {name}: {value}" for name, value in score.milestones.items())
+        lines.extend(f"- {name}: {value}" for name, value in score.final_orbit.items())
+        lines.extend(["", "Fuel remaining:"])
+        lines.extend(f"- {name}: {value}" for name, value in score.fuel_remaining.items())
+        lines.extend(["", "Time:"])
+        lines.extend(f"- {name}: {value}" for name, value in score.time.items())
         lines.extend(["", "Diagnostics:"])
         lines.extend(f"- {name}: {value}" for name, value in score.diagnostics.items())
         (self.run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -35,7 +35,7 @@ class FakeController:
             non_rotating_reference_frame="orbital-frame",
         )
         self.vessel = SimpleNamespace(
-            name="Kerbal X",
+            name="Kerbal 1",
             control=SimpleNamespace(
                 throttle=0.0,
                 current_stage=1,
@@ -266,7 +266,8 @@ def test_observe_returns_telemetry_vehicle_and_target(tmp_path) -> None:
     assert result["telemetry"]["body"] == "Kerbin"
     assert result["vehicle"]["current_stage_resources"]["LiquidFuel"] == 42.0
     assert result["vehicle"]["next_stage"]["stage"] == 0
-    assert result["target_orbit"]["periapsis_min_m"] == 70000
+    assert result["target_orbit"]["altitude_m"] == 80000
+    assert result["target_orbit"]["stable_periapsis_min_m"] == 70000
 
 
 def test_structured_controls_log_actions(tmp_path) -> None:
@@ -297,7 +298,7 @@ def test_structured_controls_log_actions(tmp_path) -> None:
 
 def test_krpc_controller_reverts_to_unpaused_launchpad() -> None:
     scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
-    launch_vessel = SimpleNamespace(name="Kerbal X")
+    launch_vessel = SimpleNamespace(name="Kerbal 1")
     space_center = SimpleNamespace(
         active_vessel=launch_vessel,
         paused=True,
@@ -349,7 +350,7 @@ def test_execute_python_exposes_flat_observe_and_tool_aliases(tmp_path) -> None:
 
     assert result["ok"] is True
     assert result["result"]["altitude"] > 0
-    assert result["result"]["vehicle"] == "Kerbal X"
+    assert result["result"]["vehicle"] == "Kerbal 1"
     assert result["result"]["throttle"] == 0.25
 
 
@@ -460,7 +461,7 @@ def test_vehicle_selection_is_stateful(tmp_path) -> None:
     selected = session.set_vehicle(index=1)
     observed = session.observe()
 
-    assert listed["vehicles"][0]["name"] == "Kerbal X"
+    assert listed["vehicles"][0]["name"] == "Kerbal 1"
     assert selected["selected"]["name"] == "Mun Probe"
     assert observed["vehicle"]["name"] == "Mun Probe"
     assert controller.conn.space_center.active_vessel is other
@@ -475,7 +476,7 @@ def test_reset_launchpad_reverts_through_controller(tmp_path) -> None:
     result = session.reset_launchpad(wait_s=0.0)
 
     assert result["ok"] is True
-    assert result["vehicle_name"] == "Kerbal X"
+    assert result["vehicle_name"] == "Kerbal 1"
     assert result["telemetry"]["situation"] == "pre_launch"
 
 

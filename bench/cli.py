@@ -455,7 +455,7 @@ def _run(args: argparse.Namespace) -> int:
         telemetry_waypoint_interval=args.telemetry_waypoint_interval,
     )
     print(f"Wrote run artifacts to {artifacts.run_dir}")
-    print(f"success={score.success} score={score.score} failure_reason={score.failure_reason}")
+    print(f"score={score.score}")
     return exit_code
 
 
@@ -562,7 +562,6 @@ def _finalize_run(
     artifacts.append_event(
         {
             "type": "run_finished",
-            "success": score.success,
             "score": score.score,
             "exit_code": exit_code,
         }
@@ -618,18 +617,16 @@ def _summarize(args: argparse.Namespace) -> int:
         print("No score.json files found.")
         return 1
 
-    successes = sum(1 for score in scores if score["success"])
     mean_score = sum(float(score["score"]) for score in scores) / len(scores)
-    failure_reasons: dict[str, int] = {}
-    for score in scores:
-        reason = score.get("failure_reason") or "success"
-        failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+    scores_by_run = {
+        str(score.get("run_id", index)): float(score["score"])
+        for index, score in enumerate(scores, start=1)
+    }
 
     aggregate = {
         "runs": len(scores),
-        "pass_rate": successes / len(scores),
         "mean_score": round(mean_score, 3),
-        "failure_reasons": failure_reasons,
+        "scores": scores_by_run,
     }
     print(json.dumps(aggregate, indent=2, sort_keys=True))
     return 0
