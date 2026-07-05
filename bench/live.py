@@ -108,6 +108,7 @@ class FlightSession:
         try:
             with self._krpc_lock:
                 sample = self._read_telemetry_or_terminate(self.controller)
+                self._raise_if_terminated()
                 vehicle = self.controller.read_vehicle_state()
             payload = {
                 "telemetry": sample.to_dict(),
@@ -235,6 +236,7 @@ class FlightSession:
                 with contextlib.redirect_stdout(stdout):
                     self._exec_with_timeout(code, scope, budget_s)
                     self._read_telemetry_or_terminate(self.controller)
+                    self._raise_if_terminated()
             finally:
                 self._krpc_lock.release()
             result = {
@@ -461,6 +463,7 @@ class FlightSession:
             with self._krpc_lock:
                 payload = apply()
                 sample = self._read_telemetry_or_terminate(self.controller)
+                self._raise_if_terminated()
             result = {"ok": True, **payload, "telemetry": sample.to_dict()}
             action.update(result)
             return result
@@ -600,6 +603,41 @@ class FlightSession:
             throttle = 0.0
         return throttle > 0.1
 
+    def _unrecoverable_reason(
+        self,
+        sample: TelemetrySample,
+        controller: KRPCController,
+    ) -> str | None:
+        if sample.mission_elapsed_s < 5.0:
+            return None
+        if sample.situation.lower() == "pre_launch":
+            return None
+        if sample.periapsis_m >= self.scenario.target_orbit.stable_periapsis_min_m:
+            return None
+        if _sample_propellant(sample) > 0.1:
+            return None
+        try:
+            vehicle = controller.read_vehicle_state()
+        except Exception:
+            return None
+        if float(vehicle.get("available_thrust", 0.0) or 0.0) > 0.1:
+            return None
+        engines = vehicle.get("engines") or []
+        decouplers = vehicle.get("decouplers") or []
+        next_stage = vehicle.get("next_stage")
+        if engines or decouplers:
+            return None
+        if next_stage and (
+            next_stage.get("engine_count")
+            or next_stage.get("decoupler_count")
+            or any(
+                float(value or 0.0) > 0.1
+                for value in (next_stage.get("resources") or {}).values()
+            )
+        ):
+            return None
+        return "mission_unrecoverable_no_propulsion"
+
     def _maybe_time_warp_to(self, target_met: float, *, controller: KRPCController) -> None:
         if self._in_atmosphere(controller) or not self.telemetry:
             return
@@ -634,6 +672,9 @@ class FlightSession:
                 self._raise_if_terminated()
             raise
         self.record_telemetry(sample)
+        reason = self._unrecoverable_reason(sample, controller)
+        if reason:
+            self._terminate(reason, mission_elapsed_s=sample.mission_elapsed_s)
         return sample
 
     def _terminate_for_controller_error(self, exc: Exception) -> bool:
@@ -811,6 +852,7 @@ class FlightSession:
 
     def _python_observe(self, controller: KRPCController) -> dict[str, Any]:
         sample = self._read_telemetry_or_terminate(controller)
+        self._raise_if_terminated()
         vehicle = controller.read_vehicle_state()
         telemetry = sample.to_dict()
         return {

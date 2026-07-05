@@ -197,6 +197,49 @@ class PadFuelDrainController(FakeController):
         )
 
 
+class DeadStickController(FakeController):
+    def read_telemetry(self) -> TelemetrySample:
+        sample = super().read_telemetry()
+        return TelemetrySample(
+            **{
+                **sample.to_dict(),
+                "mission_elapsed_s": 20.0,
+                "altitude_m": 2000.0,
+                "surface_altitude_m": 1900.0,
+                "apoapsis_m": 40000.0,
+                "periapsis_m": -550000.0,
+                "liquid_fuel": 0.0,
+                "oxidizer": 0.0,
+                "solid_fuel": 0.0,
+                "situation": "flying",
+                "stage": 0,
+            }
+        )
+
+    def read_vehicle_state(self) -> dict[str, object]:
+        return {
+            "name": self.vessel.name,
+            "current_stage": 0,
+            "throttle": self.vessel.control.throttle,
+            "available_thrust": 0.0,
+            "engines": [],
+            "decouplers": [],
+            "next_stage": None,
+            "resources": {
+                "LiquidFuel": 0.0,
+                "Oxidizer": 0.0,
+                "SolidFuel": 0.0,
+                "ElectricCharge": 0.0,
+                "MonoPropellant": 0.0,
+            },
+            "current_stage_resources": {
+                "LiquidFuel": 0.0,
+                "Oxidizer": 0.0,
+                "SolidFuel": 0.0,
+            },
+        }
+
+
 class VacuumWarpController(FakeController):
     def __init__(self) -> None:
         super().__init__()
@@ -503,6 +546,16 @@ def test_wait_stops_when_vessel_is_landed_and_burning_fuel(tmp_path) -> None:
     assert result["ok"] is False
     assert result["error_type"] == "FlightTerminated"
     assert result["error"] == "vessel_landed_burning_fuel"
+
+
+def test_observe_stops_when_suborbital_vessel_has_no_propulsion_left(tmp_path) -> None:
+    session = _session(tmp_path, controller=DeadStickController(), poll_interval_s=0.01)
+
+    result = session.observe()
+
+    assert result["ok"] is False
+    assert result["error_type"] == "FlightTerminated"
+    assert result["error"] == "mission_unrecoverable_no_propulsion"
 
 
 def test_wait_uses_time_warp_outside_atmosphere_and_finishes_with_polling(tmp_path) -> None:

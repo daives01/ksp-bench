@@ -121,7 +121,7 @@ class KRPCController:
             situation=_enum_name(vessel.situation),
             body=str(body.name),
             controllable=_is_controllable(vessel),
-            intact=True,
+            intact=_is_intact(vessel),
             time_to_apoapsis_s=_safe_float(lambda: orbit.time_to_apoapsis),
             time_to_periapsis_s=_safe_float(lambda: orbit.time_to_periapsis),
             eccentricity=_safe_float(lambda: orbit.eccentricity),
@@ -291,6 +291,13 @@ def _is_controllable(vessel: Any) -> bool:
             return bool(vessel.parts.controlling)
         except Exception:
             return True
+
+
+def _is_intact(vessel: Any) -> bool:
+    situation = _enum_name(_safe_value(lambda: vessel.situation, default="unknown")).lower()
+    if situation in {"crashed", "destroyed", "dead"}:
+        return False
+    return True
 
 
 def _set_unpaused(space_center: Any) -> None:
