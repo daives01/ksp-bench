@@ -234,6 +234,18 @@ class VacuumWarpController(FakeController):
         )
 
 
+class StaticPrelaunchController(FakeController):
+    def read_telemetry(self) -> TelemetrySample:
+        sample = super().read_telemetry()
+        return TelemetrySample(
+            **{
+                **sample.to_dict(),
+                "mission_elapsed_s": 0.0,
+                "situation": "pre_launch",
+            }
+        )
+
+
 def _session(tmp_path, controller=None, **kwargs) -> FlightSession:
     controller = controller or FakeController()
     kwargs.setdefault("task_controller_factory", FakeController)
@@ -421,6 +433,20 @@ def test_wait_in_atmosphere_does_not_time_warp(tmp_path) -> None:
     result = session.wait(2.0)
 
     assert result["ok"] is True
+
+
+def test_wait_returns_when_prelaunch_met_is_not_advancing(tmp_path) -> None:
+    session = _session(
+        tmp_path,
+        controller=StaticPrelaunchController(),
+        poll_interval_s=0.01,
+    )
+    started = time.monotonic()
+
+    result = session.wait(0.03)
+
+    assert result["ok"] is True
+    assert time.monotonic() - started < 0.5
 
 
 def test_vehicle_selection_is_stateful(tmp_path) -> None:

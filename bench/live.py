@@ -361,6 +361,13 @@ class FlightSession:
             make_active=make_active,
         )
 
+    def reset_launchpad(self, *, wait_s: float = 2.0) -> dict[str, Any]:
+        def apply() -> dict[str, Any]:
+            self.controller.prepare_for_launchpad_run(wait_s=wait_s)
+            return {"wait_s": wait_s, "vehicle_name": self.controller.vessel.name}
+
+        return self._command("reset_launchpad", apply, wait_s=wait_s)
+
     def getTelemetry(self) -> dict[str, Any]:
         return self.observe()["telemetry"]
 
@@ -538,7 +545,9 @@ class FlightSession:
             raise ValueError(f"wait seconds exceeds max_wait_s={self.max_wait_s}")
         start_met = self._latest_mission_elapsed_s()
         target_met = start_met + seconds
+        deadline = time.monotonic() + seconds
         self._maybe_time_warp_to(target_met, controller=controller)
+        last_met = start_met
         while True:
             if should_stop and should_stop():
                 raise TaskStopped("control task stopped")
@@ -546,7 +555,11 @@ class FlightSession:
             remaining_met = target_met - current_met
             if remaining_met <= 0:
                 return
-            time.sleep(min(self.poll_interval_s, remaining_met))
+            if current_met <= last_met and time.monotonic() >= deadline:
+                return
+            last_met = current_met
+            remaining_wall = max(0.0, deadline - time.monotonic())
+            time.sleep(min(self.poll_interval_s, remaining_met, remaining_wall))
             self._read_telemetry_or_terminate(controller)
             self._raise_if_terminated()
 
