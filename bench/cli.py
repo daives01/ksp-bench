@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument("scenario", nargs="?", default="scenarios/kerbin_orbit_80km.toml")
     agent.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
+    agent.add_argument("--thinking-level", help="model thinking level, for example high")
     agent.add_argument(
         "--executable",
         help="OpenCode executable path; defaults to opencode",
@@ -113,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("scenario")
     run.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
+    run.add_argument("--thinking-level", help="model thinking level, for example high")
     run.add_argument(
         "--executable",
         help="OpenCode executable path; defaults to opencode",
@@ -177,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="OpenCode model name to run; repeat for multiple models",
     )
+    batch.add_argument("--thinking-level", help="model thinking level, for example high")
     batch.add_argument(
         "--models-file",
         help="TOML file with a models = [...] list",
@@ -289,12 +292,13 @@ def _prepare_agent(args: argparse.Namespace) -> int:
 def _agent(args: argparse.Namespace) -> int:
     scenario = load_scenario(args.scenario)
     run_id = args.run_id or default_run_id("opencode_agent")
-    artifacts = RunArtifacts.create(RUNS_DIR, run_id)
     agent = {
         "name": "ksp",
         "model": args.model,
+        "thinking_level": args.thinking_level,
         "adapter": "opencode_tui_ksp_agent",
     }
+    artifacts = RunArtifacts.create(_run_artifacts_root(args.model, args.thinking_level), run_id)
     artifacts.write_manifest(scenario, agent)
     artifacts.copy_scenario(scenario)
     artifacts.write_run_config(
@@ -357,11 +361,12 @@ def _run(args: argparse.Namespace) -> int:
     scenario = load_scenario(args.scenario)
     adapter = OpenCodeAgentAdapter(
         model=args.model,
+        thinking_level=args.thinking_level,
         executable=args.executable,
         extra_args=args.agent_arg,
     )
     run_id = args.run_id or default_run_id("opencode_live")
-    artifacts = RunArtifacts.create(RUNS_DIR, run_id)
+    artifacts = RunArtifacts.create(_run_artifacts_root(args.model, args.thinking_level), run_id)
     agent = adapter.agent_metadata
 
     artifacts.write_manifest(scenario, agent)
@@ -483,9 +488,10 @@ def _batch(args: argparse.Namespace) -> int:
         run_args = argparse.Namespace(
             scenario=args.scenario,
             model=model,
+            thinking_level=args.thinking_level,
             executable=args.executable,
             agent_arg=args.agent_arg,
-            run_id=default_run_id(_run_id_prefix(model, repeat_index)),
+            run_id=default_run_id(_run_id_prefix(repeat_index)),
             agent_timeout=args.agent_timeout,
             execution_timeout=args.execution_timeout,
             task_timeout=args.task_timeout,
@@ -526,9 +532,21 @@ def _reset_launchpad(scenario: Scenario) -> bool:
     return True
 
 
-def _run_id_prefix(model: str, repeat_index: int) -> str:
-    safe_model = "".join(char if char.isalnum() else "_" for char in model).strip("_")
-    return f"opencode_live_{safe_model}_r{repeat_index}"
+def _run_artifacts_root(model: str | None, thinking_level: str | None = None) -> Path:
+    if not model:
+        return RUNS_DIR
+    root = RUNS_DIR / _safe_dir_name(model)
+    if thinking_level:
+        root /= _safe_dir_name(thinking_level)
+    return root
+
+
+def _safe_dir_name(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in value).strip("_")
+
+
+def _run_id_prefix(repeat_index: int) -> str:
+    return f"opencode_live_r{repeat_index}"
 
 
 def _finalize_run(

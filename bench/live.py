@@ -63,12 +63,14 @@ class FlightSession:
         task_timeout_s: float = 180.0,
         max_wait_s: float = 240.0,
         max_atmospheric_wait_s: float = 2.0,
+        max_sync_python_s: float = 8.0,
         poll_interval_s: float = 0.5,
         live_events: bool = False,
         execution_timeout_s: float | None = None,
         max_sleep_s: float | None = None,
         max_atmospheric_sleep_s: float | None = None,
         task_controller_factory: Callable[[], KRPCController] | None = None,
+        controller_reconnect_factory: Callable[[KRPCController], KRPCController] | None = None,
         **_unused: Any,
     ) -> None:
         self.controller = controller
@@ -78,6 +80,7 @@ class FlightSession:
         self.task_timeout_s = task_timeout_s
         self.max_wait_s = max_sleep_s or max_wait_s
         self.max_atmospheric_wait_s = max_atmospheric_sleep_s or max_atmospheric_wait_s
+        self.max_sync_python_s = max_sync_python_s
         self.poll_interval_s = poll_interval_s
         self.live_events = live_events
         self.telemetry: list[TelemetrySample] = []
@@ -91,6 +94,7 @@ class FlightSession:
         self._task_controller_factory = task_controller_factory or (
             lambda: KRPCController.connect(scenario)
         )
+        self._controller_reconnect_factory = controller_reconnect_factory
         self._next_task_id = 1
         self._orbit_diverged = False
         self._initial_propellant: float | None = None
@@ -219,6 +223,7 @@ class FlightSession:
     def execute_python(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
         started = time.monotonic()
         budget_s = self._timeout(timeout_s, default=self.python_timeout_s)
+        budget_s = min(budget_s, self.max_sync_python_s)
         action: dict[str, Any] = {
             "type": "execute_python",
             "mission_elapsed_s": self._latest_mission_elapsed_s(),
@@ -231,7 +236,7 @@ class FlightSession:
             self._validate_code(code)
             scope = self._execution_scope(controller=self.controller)
             if not self._krpc_lock.acquire(timeout=budget_s):
-                raise PythonExecutionTimeout(f"python execution exceeded {budget_s:.3f}s")
+                raise self._sync_python_timeout(budget_s)
             try:
                 with contextlib.redirect_stdout(stdout):
                     self._exec_with_timeout(code, scope, budget_s)
@@ -668,14 +673,46 @@ class FlightSession:
         try:
             sample = controller.read_telemetry()
         except Exception as exc:
-            if self._terminate_for_controller_error(exc):
-                self._raise_if_terminated()
-            raise
+            if self._can_recover_controller_error(exc):
+                try:
+                    controller = self._recover_controller(controller, exc)
+                    sample = controller.read_telemetry()
+                except Exception as retry_exc:
+                    if self._terminate_for_controller_error(retry_exc):
+                        self._raise_if_terminated()
+                    raise retry_exc from exc
+            else:
+                if self._terminate_for_controller_error(exc):
+                    self._raise_if_terminated()
+                raise
         self.record_telemetry(sample)
         reason = self._unrecoverable_reason(sample, controller)
         if reason:
             self._terminate(reason, mission_elapsed_s=sample.mission_elapsed_s)
         return sample
+
+    def _can_recover_controller_error(self, exc: Exception) -> bool:
+        return self._controller_reconnect_factory is not None and "Instance not found" in str(exc)
+
+    def _recover_controller(
+        self,
+        controller: KRPCController,
+        exc: Exception,
+    ) -> KRPCController:
+        if self._controller_reconnect_factory is None:
+            raise exc
+        recovered = self._controller_reconnect_factory(controller)
+        if controller is self.controller:
+            self.controller = recovered
+        self._emit_event(
+            {
+                "type": "krpc_controller_recovered",
+                "mission_elapsed_s": self._latest_mission_elapsed_s(),
+                "error_type": type(exc).__name__,
+                "detail": _truncate(str(exc)),
+            }
+        )
+        return recovered
 
     def _terminate_for_controller_error(self, exc: Exception) -> bool:
         message = str(exc)
@@ -911,7 +948,7 @@ class FlightSession:
         previous_handler = signal.getsignal(signal.SIGALRM)
 
         def handle_timeout(_signum: int, _frame: Any) -> None:
-            raise PythonExecutionTimeout(f"python execution exceeded {timeout_s:.3f}s")
+            raise self._sync_python_timeout(timeout_s)
 
         signal.signal(signal.SIGALRM, handle_timeout)
         signal.setitimer(signal.ITIMER_REAL, timeout_s)
@@ -950,6 +987,15 @@ class FlightSession:
         if value <= 0:
             raise ValueError("timeout_s must be positive")
         return min(value, self.max_wait_s)
+
+    def _sync_python_timeout(self, timeout_s: float) -> PythonExecutionTimeout:
+        return PythonExecutionTimeout(
+            f"ksp_execute_python exceeded its {timeout_s:.3f}s synchronous response budget. "
+            "This tool is only for short snippets that return quickly. For ascent, "
+            "circularization, waits, or control loops, use ksp_start_task instead, then "
+            "poll ksp_check_task for telemetry/status and use ksp_stop_task if you need to "
+            "change strategy."
+        )
 
     def _failure(
         self,

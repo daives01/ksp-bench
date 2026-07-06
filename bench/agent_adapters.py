@@ -17,28 +17,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_NAME = "ksp"
 REFERENCE_DIR = Path(".opencode/ksp/krpc_reference")
 
-AGENT_PROMPT_TEMPLATE = """You are the KSP flight agent. Fly the active Kerbal Space Program vessel
-to the requested orbit.
+AGENT_PROMPT_TEMPLATE = """You are a KSP flight agent, your job is to fly the active Kerbal
+Space Program vessel to the requested orbit.
 
 Mission target:
 - Body: {body}
 - Target orbit: {target_altitude_m:.0f}m apoapsis and {target_altitude_m:.0f}m periapsis
-- Stable orbit floor: periapsis at least {stable_periapsis_min_m:.0f}m
-- Mission timeout: {timeout_s:.0f}s wall clock
 
-Use the available KSP tools to observe or select the vessel, control throttle/staging/autopilot,
-wait, and run kRPC Python when needed. KSP keeps flying in real wall-clock time while you think
-and while tools run. In atmosphere, wait does not time warp; avoid long atmospheric waits unless
-you intentionally want real time to pass without spending tokens.
+Use the available KSP tools to accomplish this. Remember, KSP keeps flying in real wall-clock time
+while you think and while tools run.
 
-Before using unfamiliar kRPC APIs, search the kRPC reference material at
-.opencode/ksp/krpc_reference.
+you have kRPC reference materials available at .opencode/ksp/krpc_reference.
 
 Python snippets receive conn, space_center, vessel, observe(), getTelemetry(),
 getVehicleState(), getOrbitState(), ksp_throttle(), ksp_stage(), ksp_attitude(),
 sleep()/wait(), and math. Background tasks also receive should_stop().
-
-Do not call kRPC save, load, quickload, quicksave, revert_to_launch, or revert_to_editor APIs.
 """
 
 KRPC_REFERENCE_README = """# kRPC reference for the KSP flight agent
@@ -46,15 +39,7 @@ KRPC_REFERENCE_README = """# kRPC reference for the KSP flight agent
 This directory contains kRPC source and Python client reference material for flight control.
 Search it before guessing unfamiliar kRPC names or object paths.
 
-Useful searches:
-
-```
-rg -n "target_pitch_and_heading|class AutoPilot|class Vessel" .
-rg -n "resources_in_decouple_stage|current_stage|activate_next_stage" .
-rg -n "reference_frame|prograde|apoapsis_altitude|periapsis_altitude" .
-```
-
-Expected generated folders:
+for example there are:
 
 - `installed_python_client/`: the installed `krpc` Python package, including generated service
   modules when the optional `krpc` dependency is installed.
@@ -78,11 +63,13 @@ class OpenCodeAgentAdapter:
         self,
         *,
         model: str | None = None,
+        thinking_level: str | None = None,
         executable: str | None = None,
         extra_args: list[str] | None = None,
         project_root: Path | None = None,
     ) -> None:
         self.model = model
+        self.thinking_level = thinking_level
         self.executable = executable or "opencode"
         self.extra_args = extra_args or []
         self.project_root = project_root or PROJECT_ROOT
@@ -92,6 +79,7 @@ class OpenCodeAgentAdapter:
         return {
             "name": AGENT_NAME,
             "model": self.model,
+            "thinking_level": self.thinking_level,
             "adapter": "opencode_cli_ksp_agent",
         }
 

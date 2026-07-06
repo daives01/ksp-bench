@@ -377,6 +377,18 @@ def test_execute_python_is_escape_hatch_and_rejects_unsafe_import(tmp_path) -> N
     assert bad["error_type"] == "FlightToolError"
 
 
+def test_execute_python_timeout_points_agent_to_background_task(tmp_path) -> None:
+    session = _session(tmp_path, max_sync_python_s=0.01)
+
+    result = session.execute_python("while True:\n    pass\n", timeout_s=5.0)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "PythonExecutionTimeout"
+    assert "synchronous response budget" in result["error"]
+    assert "ksp_start_task" in result["error"]
+    assert session.actions[-1]["timeout_s"] == 0.01
+
+
 def test_execute_python_exposes_flat_observe_and_tool_aliases(tmp_path) -> None:
     session = _session(tmp_path)
 
@@ -594,6 +606,35 @@ def test_wait_treats_lost_krpc_vessel_instance_as_terminated(tmp_path) -> None:
     assert len(terminated) == 1
     assert terminated[0]["reason"] == "vessel_lost"
     assert terminated[0]["error_type"] == "RuntimeError"
+
+
+def test_observe_recovers_lost_krpc_vessel_instance_before_returning_error(tmp_path) -> None:
+    recovered_controller = FakeController()
+    reconnect_calls = []
+
+    def reconnect(controller):
+        reconnect_calls.append(controller)
+        return recovered_controller
+
+    session = _session(
+        tmp_path,
+        controller=LostVesselController(),
+        controller_reconnect_factory=reconnect,
+    )
+
+    result = session.observe()
+
+    assert result["ok"] is True
+    assert result["telemetry"]["body"] == "Kerbin"
+    assert session.controller is recovered_controller
+    assert len(reconnect_calls) == 1
+    assert session.terminated is False
+    events = [
+        json.loads(line)
+        for line in (session.artifacts.run_dir / "events.jsonl").read_text().splitlines()
+    ]
+    assert any(event["type"] == "krpc_controller_recovered" for event in events)
+    assert not any(event["type"] == "run_terminated" for event in events)
 
 
 def test_observe_returns_error_after_lost_vessel_instance(tmp_path) -> None:

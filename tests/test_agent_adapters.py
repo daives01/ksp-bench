@@ -38,6 +38,13 @@ def test_opencode_command_uses_project_ksp_agent(tmp_path) -> None:
     assert command[-1] == "fly the rocket"
 
 
+def test_opencode_agent_metadata_includes_thinking_level() -> None:
+    adapter = OpenCodeAgentAdapter(model="openai/gpt-5.4", thinking_level="high")
+
+    assert adapter.agent_metadata["model"] == "openai/gpt-5.4"
+    assert adapter.agent_metadata["thinking_level"] == "high"
+
+
 def test_opencode_environment_disables_privileged_reset_tool(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("KSPBENCH_ENABLE_RESET_TOOL", "1")
     adapter = OpenCodeAgentAdapter(model="openai/gpt-5.4", project_root=tmp_path)
@@ -138,6 +145,7 @@ def test_ksp_mcp_lists_flight_tools() -> None:
     responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
     tools = responses[1]["result"]["tools"]
     names = {tool["name"] for tool in tools}
+    descriptions = {tool["name"]: tool["description"] for tool in tools}
     assert {
         "observe",
         "throttle",
@@ -151,6 +159,9 @@ def test_ksp_mcp_lists_flight_tools() -> None:
         "check_task",
         "stop_task",
     } <= names
+    assert "must return quickly" in descriptions["execute_python"]
+    assert "Use start_task" in descriptions["execute_python"]
+    assert "longer-running" in descriptions["start_task"]
     assert "reset_launchpad" not in names
 
 

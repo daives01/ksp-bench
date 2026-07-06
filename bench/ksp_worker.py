@@ -37,12 +37,14 @@ class Worker:
             python_timeout_s=_float_env("KSPBENCH_EXECUTION_TIMEOUT", 15.0),
             task_timeout_s=_float_env("KSPBENCH_TASK_TIMEOUT", 180.0),
             max_wait_s=_float_env("KSPBENCH_MAX_SLEEP", 240.0),
+            max_sync_python_s=_float_env("KSPBENCH_MAX_SYNC_PYTHON", 8.0),
             poll_interval_s=_float_env("KSPBENCH_POLL_INTERVAL", 0.5),
             live_events=True,
             task_controller_factory=lambda: KRPCController.connect(
                 self.scenario,
                 strict_vessel=False,
             ),
+            controller_reconnect_factory=self.reconnect_controller,
         )
 
     def close(self) -> None:
@@ -61,6 +63,18 @@ class Worker:
                 with contextlib.suppress(Exception):
                     self.controller.select_vessel(**self.selected_vehicle)
             self.artifacts.append_event({"type": "ksp_mcp_worker_reconnected"})
+
+    def reconnect_controller(self, old_controller: KRPCController) -> KRPCController:
+        with contextlib.suppress(Exception):
+            old_controller.close()
+        controller = KRPCController.connect(self.scenario, strict_vessel=False)
+        if self.selected_vehicle is not None:
+            with contextlib.suppress(Exception):
+                controller.select_vessel(**self.selected_vehicle)
+        if old_controller is self.controller:
+            self.controller = controller
+        self.artifacts.append_event({"type": "ksp_mcp_controller_reconnected"})
+        return controller
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         try:

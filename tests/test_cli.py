@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from bench.cli import _batch, _score, build_parser
+from bench.cli import _batch, _run_artifacts_root, _score, build_parser
 
 
 def test_only_opencode_execution_command_is_registered() -> None:
@@ -73,7 +73,7 @@ def test_batch_resets_around_each_run(monkeypatch) -> None:
         return True
 
     def fake_run(args):
-        calls.append(("run", args.model, args.run_id))
+        calls.append(("run", args.model, args.run_id, args.thinking_level))
         return 0
 
     monkeypatch.setattr("bench.cli._reset_launchpad", fake_reset)
@@ -83,6 +83,7 @@ def test_batch_resets_around_each_run(monkeypatch) -> None:
         argparse.Namespace(
             scenario="scenarios/kerbin_orbit_80km.toml",
             model=["openai/gpt-5.3", "openai/gpt-5.4"],
+            thinking_level="high",
             models_file=None,
             repeat=1,
             no_reset=False,
@@ -107,6 +108,18 @@ def test_batch_resets_around_each_run(monkeypatch) -> None:
         "openai/gpt-5.3",
         "openai/gpt-5.4",
     ]
+    assert "openai_gpt_5" not in calls[1][2]
+    assert [call[0] for call in calls if isinstance(call, tuple)] == ["run", "run"]
+    assert [call[3] for call in calls if isinstance(call, tuple)] == ["high", "high"]
+
+
+def test_model_runs_are_grouped_by_safe_model_directory() -> None:
+    assert _run_artifacts_root("openai/gpt-5.4").as_posix() == "runs/openai_gpt_5_4"
+    assert (
+        _run_artifacts_root("openai/gpt-5.4", "high").as_posix()
+        == "runs/openai_gpt_5_4/high"
+    )
+    assert _run_artifacts_root(None).as_posix() == "runs"
 
 
 def test_score_handles_missing_telemetry_csv(tmp_path) -> None:
