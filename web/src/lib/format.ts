@@ -1,0 +1,26 @@
+export function formatMeters(value: number) {
+  if (!Number.isFinite(value)) return "n/a";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)} Mm`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(1)} km`;
+  return `${Math.round(value)} m`;
+}
+
+export function formatSeconds(value: number) {
+  if (!Number.isFinite(value)) return "n/a";
+  if (value < 60) return `${value.toFixed(1)}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+export function formatCost(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "not reported";
+  if (value === 0) return "$0";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+export function modelLabel(model: string) {
+  return model.replace(/^opencode\//, "").replace(/^openai\//, "");
+}

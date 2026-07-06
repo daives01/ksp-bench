@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 146 24% 4%;
+    --foreground: 156 18% 94%;
+    --card: 150 21% 7%;
+    --card-foreground: 156 18% 94%;
+    --popover: 150 21% 7%;
+    --popover-foreground: 156 18% 94%;
+    --primary: 158 84% 52%;
+    --primary-foreground: 150 22% 6%;
+    --secondary: 164 20% 12%;
+    --secondary-foreground: 156 18% 94%;
+    --muted: 160 13% 18%;
+    --muted-foreground: 157 8% 64%;
+    --accent: 198 88% 62%;
+    --accent-foreground: 150 22% 6%;
+    --destructive: 0 77% 57%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 158 18% 20%;
+    --input: 158 18% 20%;
+    --ring: 158 84% 52%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    min-width: 320px;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  .circuit-grid {
+    background:
+      linear-gradient(rgba(52, 211, 153, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(125, 211, 252, 0.05) 1px, transparent 1px),
+      radial-gradient(circle at 18% 18%, rgba(52, 211, 153, 0.12), transparent 28%),
+      radial-gradient(circle at 82% 4%, rgba(250, 204, 21, 0.08), transparent 24%);
+    background-size: 48px 48px, 48px 48px, 100% 100%, 100% 100%;
+  }
+}
