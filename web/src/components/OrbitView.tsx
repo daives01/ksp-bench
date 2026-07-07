@@ -50,9 +50,6 @@ export function OrbitView({ runs }: OrbitViewProps) {
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="font-display text-2xl font-bold uppercase">Orbit Plot</h2>
-            <p className="text-sm text-muted-foreground">
-              Top-down ellipse view derived from final orbit parameters.
-            </p>
           </div>
           <Badge variant={selectedRun.diagnostics.stable_orbit ? "success" : "warning"}>
             {selectedRun.diagnostics.stable_orbit ? "stable orbit" : selectedRun.finalOrbit.situation}

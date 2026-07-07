@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatMeters, formatSeconds, modelLabel } from "@/lib/format";
 import type { BenchmarkRun } from "@/types";
@@ -15,9 +14,6 @@ export function ResultsView({ runs }: ResultsViewProps) {
       <section className="rounded-md border border-border bg-card/80 p-4">
         <div className="mb-4">
           <h2 className="font-display text-2xl font-bold uppercase">Score Distribution</h2>
-          <p className="text-sm text-muted-foreground">
-            Higher is better. Stable orbit adds a major milestone bonus.
-          </p>
         </div>
         <div className="space-y-3">
           {runs.map((run, index) => (
@@ -49,9 +45,7 @@ export function ResultsView({ runs }: ResultsViewProps) {
         <div className="flex items-center justify-between gap-4 border-b border-border p-4">
           <div>
             <h2 className="font-display text-2xl font-bold uppercase">Leaderboard</h2>
-            <p className="text-sm text-muted-foreground">Model runs sorted by score.</p>
           </div>
-          <Badge variant="outline">score.json</Badge>
         </div>
         <Table>
           <TableHeader>
