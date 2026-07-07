@@ -31,7 +31,7 @@ you have kRPC reference materials available at .opencode/ksp/krpc_reference.
 
 Python snippets receive conn, space_center, vessel, observe(), getTelemetry(),
 getVehicleState(), getOrbitState(), ksp_throttle(), ksp_stage(), ksp_attitude(),
-sleep()/wait(), and math. Background tasks also receive should_stop().
+sleep()/wait(), math, and time. Background tasks also receive should_stop().
 """
 
 KRPC_REFERENCE_README = """# kRPC reference for the KSP flight agent

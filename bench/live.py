@@ -868,6 +868,7 @@ class FlightSession:
         scope = {
             "__builtins__": _safe_builtins(),
             "math": math,
+            "time": time,
             "conn": controller.conn,
             "space_center": controller.conn.space_center,
             "vessel": controller.vessel,
@@ -921,7 +922,7 @@ class FlightSession:
         }
         for node in ast.walk(tree):
             if isinstance(node, ast.Import | ast.ImportFrom) and not _is_allowed_import(node):
-                raise FlightToolError("imports are not allowed, except import math")
+                raise FlightToolError("imports are not allowed, except import math and import time")
             if isinstance(node, ast.Name) and node.id.startswith("__"):
                 raise FlightToolError("dunder names are not allowed")
             if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
@@ -1138,8 +1139,11 @@ def _safe_builtins() -> dict[str, Any]:
 
 def _is_allowed_import(node: ast.Import | ast.ImportFrom) -> bool:
     if isinstance(node, ast.Import):
-        return all(alias.name == "math" and alias.asname in (None, "math") for alias in node.names)
-    return node.module == "math" and node.level == 0
+        return all(
+            alias.name in {"math", "time"} and alias.asname in (None, alias.name)
+            for alias in node.names
+        )
+    return node.module in {"math", "time"} and node.level == 0
 
 
 def _safe_import(
@@ -1151,7 +1155,9 @@ def _safe_import(
 ) -> Any:
     if name == "math" and level == 0:
         return math
-    raise ImportError("only import math is allowed")
+    if name == "time" and level == 0:
+        return time
+    raise ImportError("only import math and time are allowed")
 
 
 def _truncate(value: str, limit: int = 4000) -> str:

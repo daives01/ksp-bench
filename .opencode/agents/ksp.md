@@ -32,7 +32,7 @@ Python snippets receive:
 - `observe()`, `getTelemetry()`, `getVehicleState()`, and `getOrbitState()`
 - `ksp_throttle(value)`, `ksp_stage()`, and `ksp_attitude(mode, ...)`
 - `sleep(seconds)` and `wait(seconds)`
-- `math`
+- `math` and `time`
 - background tasks also receive `should_stop()`
 
 KSP continues flying in real wall-clock time while you think and while tools run. In atmosphere, wait does not time warp; avoid long atmospheric waits unless you intentionally want real time to pass without spending tokens. Do not call save, load, quickload, quicksave, revert_to_launch, revert_to_editor, or equivalent reset APIs.
