@@ -34,6 +34,14 @@ class TaskStopped(FlightToolError):
     """Raised when a background task observes a cooperative stop request."""
 
 
+def _enable_sas_if_needed(vessel: Any) -> bool:
+    control = vessel.control
+    if not control.sas:
+        control.sas = True
+        return True
+    return False
+
+
 @dataclass
 class ControlTask:
     task_id: str
@@ -169,7 +177,9 @@ class FlightSession:
             heading = float(heading)
 
             def apply() -> dict[str, Any]:
-                autopilot = self.controller.vessel.auto_pilot
+                vessel = self.controller.vessel
+                _enable_sas_if_needed(vessel)
+                autopilot = vessel.auto_pilot
                 autopilot.engage()
                 autopilot.target_pitch_and_heading(pitch, heading)
                 return {"mode": mode, "pitch": pitch, "heading": heading}
@@ -178,6 +188,7 @@ class FlightSession:
 
         def apply() -> dict[str, Any]:
             vessel = self.controller.vessel
+            _enable_sas_if_needed(vessel)
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
             direction = _flight_direction(flight, mode)
@@ -841,7 +852,9 @@ class FlightSession:
             if mode == "pitch_heading":
                 if pitch is None or heading is None:
                     raise ValueError("pitch and heading are required for pitch_heading mode")
-                autopilot = controller.vessel.auto_pilot
+                vessel = controller.vessel
+                _enable_sas_if_needed(vessel)
+                autopilot = vessel.auto_pilot
                 autopilot.engage()
                 autopilot.target_pitch_and_heading(float(pitch), float(heading))
                 return {
@@ -853,6 +866,7 @@ class FlightSession:
                 }
 
             vessel = controller.vessel
+            _enable_sas_if_needed(vessel)
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
             direction = _flight_direction(flight, mode)
@@ -917,9 +931,13 @@ class FlightSession:
             raise FlightToolError(str(exc)) from exc
         banned_calls = {"breakpoint", "compile", "eval", "exec", "input", "open", "__import__"}
         banned_krpc_methods = {
+            "launch_vessel",
+            "launch_vessel_from_sph",
+            "launch_vessel_from_vab",
             "load",
             "quickload",
             "quicksave",
+            "recover_vessel",
             "revert_to_launch",
             "revert_to_editor",
         }

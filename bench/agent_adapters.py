@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_NAME = "ksp"
 REFERENCE_DIR = Path(".opencode/ksp/krpc_reference")
 
-AGENT_PROMPT_TEMPLATE = """You are a KSP flight agent, your job is to fly the active Kerbal
+AGENT_PROMPT_TEMPLATE = """You are a KSP flight agent, your job is to fly the assigned Kerbal
 Space Program vessel to the requested orbit.
 
 Mission target:
@@ -56,6 +56,7 @@ class ExternalAgentResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    terminated: bool = False
 
 
 class OpenCodeAgentAdapter:
@@ -107,29 +108,19 @@ class OpenCodeAgentAdapter:
             poll_interval_s=poll_interval_s,
         )
         if stream_output:
-            return _run_streaming(command, cwd=self.project_root, timeout_s=timeout_s, env=env)
-        try:
-            completed = subprocess.run(
+            return _run_streaming(
                 command,
                 cwd=self.project_root,
+                timeout_s=timeout_s,
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
+                run_dir=run_dir,
             )
-        except subprocess.TimeoutExpired as exc:
-            return ExternalAgentResult(
-                command=command,
-                returncode=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
-                timed_out=True,
-            )
-        return ExternalAgentResult(
-            command=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+        return _run_captured(
+            command,
+            cwd=self.project_root,
+            timeout_s=timeout_s,
+            env=env,
+            run_dir=run_dir,
         )
 
     def _command(self, prompt: str) -> list[str]:
@@ -347,6 +338,7 @@ def _run_streaming(
     cwd: Path,
     timeout_s: float,
     env: dict[str, str],
+    run_dir: Path | None = None,
 ) -> ExternalAgentResult:
     try:
         process = subprocess.Popen(
@@ -377,13 +369,11 @@ def _run_streaming(
     ]
     for thread in threads:
         thread.start()
-    try:
-        returncode = process.wait(timeout=timeout_s)
-        timed_out = False
-    except subprocess.TimeoutExpired:
-        process.kill()
-        returncode = 124
-        timed_out = True
+    returncode, timed_out, terminated = _wait_for_process(
+        process,
+        timeout_s=timeout_s,
+        run_dir=run_dir,
+    )
     for thread in threads:
         thread.join(timeout=2.0)
     return ExternalAgentResult(
@@ -392,6 +382,105 @@ def _run_streaming(
         stdout="".join(stdout_chunks),
         stderr="".join(stderr_chunks),
         timed_out=timed_out,
+        terminated=terminated,
+    )
+
+
+def _run_captured(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_s: float,
+    env: dict[str, str],
+    run_dir: Path | None = None,
+) -> ExternalAgentResult:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        return ExternalAgentResult(command=command, returncode=127, stdout="", stderr=str(exc))
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    threads = [
+        threading.Thread(
+            target=_collect_stream,
+            args=(process.stdout, stdout_chunks),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_collect_stream,
+            args=(process.stderr, stderr_chunks),
+            daemon=True,
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    returncode, timed_out, terminated = _wait_for_process(
+        process,
+        timeout_s=timeout_s,
+        run_dir=run_dir,
+    )
+    for thread in threads:
+        thread.join(timeout=2.0)
+    return ExternalAgentResult(
+        command=command,
+        returncode=returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+        timed_out=timed_out,
+        terminated=terminated,
+    )
+
+
+def _wait_for_process(
+    process: subprocess.Popen[str],
+    *,
+    timeout_s: float,
+    run_dir: Path | None,
+) -> tuple[int, bool, bool]:
+    deadline = threading.Event()
+    timeout_timer = threading.Timer(timeout_s, deadline.set)
+    timeout_timer.start()
+    try:
+        while process.poll() is None:
+            if run_dir is not None and _run_was_terminated(run_dir):
+                _stop_process(process)
+                return process.wait(timeout=2.0), False, True
+            if deadline.is_set():
+                process.kill()
+                return process.wait(timeout=2.0), True, False
+            threading.Event().wait(0.1)
+        return process.returncode or 0, False, False
+    finally:
+        timeout_timer.cancel()
+
+
+def _stop_process(process: subprocess.Popen[str]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def _run_was_terminated(run_dir: Path) -> bool:
+    events = run_dir / "events.jsonl"
+    if not events.exists():
+        return False
+    try:
+        lines = events.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    return any(
+        '"type": "run_terminated"' in line or '"type":"run_terminated"' in line
+        for line in lines
     )
 
 
@@ -402,6 +491,13 @@ def _tee_stream(stream: Any, target: Any, chunks: list[str], formatter: Any = No
         chunks.append(chunk)
         target.write(formatter(chunk) if formatter else chunk)
         target.flush()
+
+
+def _collect_stream(stream: Any, chunks: list[str]) -> None:
+    if stream is None:
+        return
+    for chunk in iter(stream.readline, ""):
+        chunks.append(chunk)
 
 
 def _format_opencode_json_line(line: str) -> str:
@@ -453,7 +549,7 @@ def _format_opencode_terminal_line(line: str) -> str:
     if not clean:
         return ""
     match = re.fullmatch(
-        r".*?(ksp_(?:observe|throttle|stage|list_vehicles|set_vehicle|attitude|wait|"
+        r".*?(ksp_(?:observe|throttle|stage|attitude|wait|"
         r"execute_python|"
         r"start_task|check_task|stop_task))(?:\s+(.*))?",
         clean,
@@ -463,7 +559,7 @@ def _format_opencode_terminal_line(line: str) -> str:
 
     tool = match.group(1)
     payload = (match.group(2) or "").strip()
-    if tool in {"ksp_observe", "ksp_stage", "ksp_list_vehicles", "ksp_check_task"}:
+    if tool in {"ksp_observe", "ksp_stage", "ksp_check_task"}:
         return f"[agent] {tool}{(' ' + payload) if payload else ''}{line_end}"
 
     if not payload:

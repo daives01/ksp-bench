@@ -28,12 +28,6 @@ type ToolDefinition = {
     inputSchema: Record<string, unknown>;
 };
 
-type SelectedVehicle = {
-    name?: string;
-    index?: number;
-    make_active: boolean;
-};
-
 type TaskStatus = {
     task_id: string;
     status: string;
@@ -92,12 +86,6 @@ const tools: ToolDefinition[] = [
         inputSchema: objectSchema({}),
     },
     {
-        name: "list_vehicles",
-        description:
-            "List known KSP vehicles and show which one this MCP session is controlling.",
-        inputSchema: objectSchema({}),
-    },
-    {
         name: "reset_launchpad",
         description:
             "Revert KSP to the unpaused benchmark vessel on the launchpad.",
@@ -108,32 +96,6 @@ const tools: ToolDefinition[] = [
                     minimum: 0,
                     description:
                         "Seconds to wait for the reverted vessel to become active. Defaults to 2.",
-                },
-            },
-            [],
-        ),
-    },
-    {
-        name: "set_vehicle",
-        description:
-            "Select the vehicle this MCP session controls by list index or exact name.",
-        inputSchema: objectSchema(
-            {
-                index: {
-                    type: "integer",
-                    minimum: 0,
-                    description:
-                        "Vehicle index from list_vehicles. Pass either index or name.",
-                },
-                name: {
-                    type: "string",
-                    description:
-                        "Exact vehicle name from list_vehicles. Pass either name or index.",
-                },
-                make_active: {
-                    type: "boolean",
-                    description:
-                        "Also make the selected vehicle active in KSP. Defaults to true.",
                 },
             },
             [],
@@ -261,9 +223,7 @@ const foregroundToolNames = new Set([
     "observe",
     "throttle",
     "stage",
-    "list_vehicles",
     "reset_launchpad",
-    "set_vehicle",
     "attitude",
     "wait",
     "execute_python",
@@ -272,7 +232,6 @@ const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const tasks = new Map<string, TaskInfo>();
 let nextTaskID = 1;
-let selectedVehicle: SelectedVehicle | undefined;
 let generatedRunDir: string | undefined;
 
 class PythonProcessError extends Error {
@@ -405,18 +364,10 @@ async function callForegroundTool(
         {
             method: name,
             params: args,
-            selected_vehicle: selectedVehicle ?? null,
+            selected_vehicle: null,
         },
         toolTimeoutSeconds(name, args),
     );
-    if (isObject(result) && result.ok !== false) {
-        if (name === "set_vehicle") {
-            const selection = selectedVehicleFromArgs(args);
-            selectedVehicle = selection.make_active ? undefined : selection;
-        } else if (name === "reset_launchpad") {
-            selectedVehicle = undefined;
-        }
-    }
     return result;
 }
 
@@ -462,7 +413,7 @@ function startTask(args: Record<string, unknown>): Record<string, unknown> {
             timeout_s: timeoutS,
             status_path: statusPath,
             stop_path: stopPath,
-            selected_vehicle: selectedVehicle ?? null,
+            selected_vehicle: null,
         }) + "\n",
     );
     child.stdin.end();
@@ -738,17 +689,6 @@ function currentTaskStatus(statuses: TaskStatus[]): TaskStatus | null {
     return statuses.at(-1) ?? null;
 }
 
-function selectedVehicleFromArgs(args: Record<string, unknown>): SelectedVehicle {
-    const makeActive =
-        args.make_active === undefined || args.make_active === null
-            ? true
-            : args.make_active === true;
-    if (typeof args.name === "string") {
-        return { name: args.name, make_active: makeActive };
-    }
-    return { index: requiredInteger(args, "index"), make_active: makeActive };
-}
-
 function shutdownTasks(): void {
     for (const info of tasks.values()) {
         clearTimeout(info.timeout);
@@ -853,7 +793,6 @@ function validateToolArguments(
     switch (name) {
         case "observe":
         case "stage":
-        case "list_vehicles":
             rejectUnexpected(name, args, []);
             return;
         case "reset_launchpad":
@@ -871,26 +810,6 @@ function validateToolArguments(
             const value = requiredNumber(args, "value");
             if (value < 0 || value > 1)
                 throw new Error("throttle.value must be between 0 and 1");
-            return;
-        }
-        case "set_vehicle": {
-            rejectUnexpected(name, args, ["index", "name", "make_active"]);
-            const hasIndex = args.index !== undefined && args.index !== null;
-            const hasName = args.name !== undefined && args.name !== null;
-            if (hasIndex === hasName)
-                throw new Error(
-                    "set_vehicle requires exactly one of index or name",
-                );
-            if (hasIndex) requiredInteger(args, "index");
-            if (hasName && typeof args.name !== "string")
-                throw new Error("set_vehicle.name must be a string");
-            if (
-                args.make_active !== undefined &&
-                args.make_active !== null &&
-                typeof args.make_active !== "boolean"
-            ) {
-                throw new Error("set_vehicle.make_active must be a boolean");
-            }
             return;
         }
         case "attitude": {

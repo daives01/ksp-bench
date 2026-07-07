@@ -349,7 +349,8 @@ def _agent(args: argparse.Namespace) -> int:
         },
     )
     telemetry = _read_telemetry_artifact(artifacts.run_dir)
-    _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    if not _has_run_terminated(artifacts.run_dir):
+        _append_final_telemetry_sample(artifacts, scenario, telemetry)
     artifacts.write_telemetry(telemetry)
     artifacts.write_telemetry_waypoints(telemetry)
     artifacts.append_event({"type": "agent_finished", "exit_code": completed.returncode})
@@ -399,7 +400,15 @@ def _run(args: argparse.Namespace) -> int:
             poll_interval_s=args.poll_interval,
             stream_output=not args.no_stream_agent,
         )
-        if result.returncode != 0:
+        if result.terminated:
+            artifacts.append_event(
+                {
+                    "type": "agent_stopped",
+                    "reason": "run_terminated",
+                    "returncode": result.returncode,
+                }
+            )
+        elif result.returncode != 0:
             artifacts.append_event(
                 {
                     "type": "run_failed",
@@ -423,6 +432,7 @@ def _run(args: argparse.Namespace) -> int:
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "timed_out": result.timed_out,
+                "terminated": result.terminated,
                 "usage": extract_usage(result.stdout, result.stderr),
             },
         )
@@ -440,7 +450,8 @@ def _run(args: argparse.Namespace) -> int:
         )
 
     telemetry = _read_telemetry_artifact(artifacts.run_dir)
-    _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    if not _has_run_terminated(artifacts.run_dir):
+        _append_final_telemetry_sample(artifacts, scenario, telemetry)
     actions = _read_jsonl(artifacts.run_dir / "action_log.jsonl")
     invalid_actions = sum(
         1
@@ -682,6 +693,16 @@ def _append_final_telemetry_sample(
         return
     telemetry.append(sample)
     artifacts.append_telemetry_sample(sample)
+
+
+def _has_run_terminated(run_dir: Path) -> bool:
+    events_path = run_dir / "events.jsonl"
+    if not events_path.exists():
+        return False
+    return any(
+        event.get("type") == "run_terminated"
+        for event in _read_jsonl(events_path)
+    )
 
 
 def _coerce_row(row: dict[str, str]) -> dict[str, object]:

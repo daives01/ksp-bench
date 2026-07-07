@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import threading
+import time
 
 from bench.agent_adapters import (
     AGENT_NAME,
@@ -10,6 +13,7 @@ from bench.agent_adapters import (
     OpenCodeAgentAdapter,
     _format_opencode_terminal_chunk,
     _format_opencode_terminal_line,
+    _run_captured,
     build_agent_prompt,
     extract_usage,
     prepare_opencode_workspace,
@@ -60,6 +64,36 @@ def test_opencode_environment_disables_privileged_reset_tool(tmp_path, monkeypat
     )
 
     assert env["KSPBENCH_ENABLE_RESET_TOOL"] == "0"
+
+
+def test_agent_process_stops_when_run_terminated_event_appears(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    def terminate_run() -> None:
+        time.sleep(0.2)
+        (run_dir / "events.jsonl").write_text(
+            json.dumps({"type": "run_terminated", "reason": "test"}) + "\n",
+            encoding="utf-8",
+        )
+
+    thread = threading.Thread(target=terminate_run)
+    thread.start()
+    started = time.monotonic()
+
+    result = _run_captured(
+        [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"],
+        cwd=tmp_path,
+        timeout_s=10.0,
+        env=os.environ.copy(),
+        run_dir=run_dir,
+    )
+
+    thread.join(timeout=2.0)
+    assert result.terminated is True
+    assert result.timed_out is False
+    assert result.stdout == "started\n"
+    assert time.monotonic() - started < 5.0
 
 
 def test_prepare_opencode_workspace_copies_literal_krpc_sources(tmp_path) -> None:
@@ -150,8 +184,6 @@ def test_ksp_mcp_lists_flight_tools() -> None:
         "observe",
         "throttle",
         "stage",
-        "list_vehicles",
-        "set_vehicle",
         "attitude",
         "wait",
         "execute_python",
@@ -162,7 +194,48 @@ def test_ksp_mcp_lists_flight_tools() -> None:
     assert "must return quickly" in descriptions["execute_python"]
     assert "Use start_task" in descriptions["execute_python"]
     assert "longer-running" in descriptions["start_task"]
+    assert "list_vehicles" not in names
+    assert "set_vehicle" not in names
     assert "reset_launchpad" not in names
+
+
+def test_ksp_mcp_rejects_vehicle_selection_tools() -> None:
+    payload = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "list_vehicles", "arguments": {}},
+                }
+            ),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "set_vehicle", "arguments": {"index": 1}},
+                }
+            ),
+            "",
+        ]
+    )
+
+    completed = subprocess.run(
+        ["bun", "run", "mcp/server.ts"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    assert responses[1]["error"]["message"] == "unknown KSP tool: list_vehicles"
+    assert responses[2]["error"]["message"] == "unknown KSP tool: set_vehicle"
 
 
 def test_ksp_mcp_lists_reset_tool_only_when_enabled() -> None:

@@ -64,6 +64,11 @@ class KRPCController:
         self.conn = conn
         self.scenario = scenario
         self.vessel = conn.space_center.active_vessel
+        if scenario.vessel_name and self.vessel.name != scenario.vessel_name:
+            named_vessel = _find_vessel_by_name(conn.space_center, scenario.vessel_name)
+            if named_vessel is not None:
+                self.vessel = named_vessel
+                conn.space_center.active_vessel = named_vessel
         if strict_vessel and scenario.vessel_name and self.vessel.name != scenario.vessel_name:
             raise ValueError(
                 f"active vessel is {self.vessel.name!r}, expected {scenario.vessel_name!r}"
@@ -281,6 +286,13 @@ def _resource_amount(resources: Any, name: str) -> float:
 
 def _enum_name(value: Any) -> str:
     return str(getattr(value, "name", value))
+
+
+def _find_vessel_by_name(space_center: Any, name: str) -> Any | None:
+    for vessel in _safe_value(lambda: space_center.vessels, default=[]):
+        if _safe_value(lambda vessel=vessel: vessel.name, default=None) == name:
+            return vessel
+    return None
 
 
 def _is_controllable(vessel: Any) -> bool:

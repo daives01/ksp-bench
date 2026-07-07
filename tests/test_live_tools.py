@@ -38,6 +38,7 @@ class FakeController:
             name="Kerbal 1",
             control=SimpleNamespace(
                 throttle=0.0,
+                sas=False,
                 current_stage=1,
                 activate_next_stage=lambda: ["part"],
             ),
@@ -326,6 +327,7 @@ def test_structured_controls_log_actions(tmp_path) -> None:
     assert throttle["ok"] is True
     assert controller.vessel.control.throttle == 0.7
     assert stage["activated_parts"] == 1
+    assert controller.vessel.control.sas is True
     assert controller.vessel.auto_pilot.pitch == 80
     assert prograde["reference_frame"] == "orbital"
     assert normal["mode"] == "normal"
@@ -363,6 +365,19 @@ def test_krpc_controller_reverts_to_unpaused_launchpad() -> None:
     assert controller.vessel is launch_vessel
 
 
+def test_krpc_controller_selects_scenario_vessel_when_active_vessel_differs() -> None:
+    scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
+    active = SimpleNamespace(name="Mun Probe")
+    benchmark = SimpleNamespace(name="Kerbal 1")
+    space_center = SimpleNamespace(active_vessel=active, vessels=[active, benchmark])
+    conn = SimpleNamespace(space_center=space_center)
+
+    controller = KRPCController(conn, scenario, strict_vessel=False)
+
+    assert controller.vessel is benchmark
+    assert conn.space_center.active_vessel is benchmark
+
+
 def test_execute_python_is_escape_hatch_and_rejects_unsafe_import(tmp_path) -> None:
     session = _session(tmp_path)
 
@@ -370,11 +385,15 @@ def test_execute_python_is_escape_hatch_and_rejects_unsafe_import(tmp_path) -> N
         "vessel.control.throttle = 0.5\nresult = {'throttle': vessel.control.throttle}"
     )
     bad = session.execute_python("import os")
+    launch = session.execute_python("space_center.launch_vessel_from_vab('Auto-Saved Ship', True)")
 
     assert ok["ok"] is True
     assert ok["result"] == {"throttle": 0.5}
     assert bad["ok"] is False
     assert bad["error_type"] == "FlightToolError"
+    assert launch["ok"] is False
+    assert launch["error_type"] == "FlightToolError"
+    assert "launch_vessel_from_vab is not available" in launch["error"]
 
 
 def test_execute_python_timeout_points_agent_to_background_task(tmp_path) -> None:

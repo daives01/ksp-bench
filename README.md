@@ -84,7 +84,7 @@ uv run kspbench batch scenarios/kerbin_orbit_80km.toml \
 
 The live harness exposes a deliberately small tool surface to the agent:
 
-- Structured flight tools for observing/selecting vessels, throttle, staging, attitude hold, and wait.
+- Structured flight tools for observing the benchmark vessel, throttle, staging, attitude hold, and wait.
 - A direct Python escape hatch for kRPC calls that the structured tools do not cover.
 - Multiple background Python control tasks for longer closed-loop burns or guards, each with a task id.
 

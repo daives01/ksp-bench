@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from bench.cli import _batch, _run_artifacts_root, _score, build_parser
+from bench.cli import _batch, _has_run_terminated, _run_artifacts_root, _score, build_parser
 
 
 def test_only_opencode_execution_command_is_registered() -> None:
@@ -120,6 +120,19 @@ def test_model_runs_are_grouped_by_safe_model_directory() -> None:
         == "runs/openai_gpt_5_4/high"
     )
     assert _run_artifacts_root(None).as_posix() == "runs"
+
+
+def test_run_terminated_event_is_detected_for_finalization(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    assert _has_run_terminated(run_dir) is False
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({"type": "run_terminated", "reason": "dead_stick"}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert _has_run_terminated(run_dir) is True
 
 
 def test_score_handles_missing_telemetry_csv(tmp_path) -> None:
