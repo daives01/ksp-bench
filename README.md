@@ -6,7 +6,7 @@ The repo is intentionally split into a few durable parts:
 
 - `mcp/`: a reusable Bun/TypeScript MCP server that exposes the KSP flight tools.
 - `.opencode/agents/ksp.md`: the reusable OpenCode KSP agent definition.
-- `bench/`: scenario loading, scoring, telemetry, Python kRPC worker, artifacts,
+- `bench/`: scenario loading, scoring, telemetry, Python kRPC subprocesses, artifacts,
   and the benchmark runner.
 - `scenarios/`: benchmark scenario definitions.
 - `env/ckan/`: reproducible KSP mod environment metadata.

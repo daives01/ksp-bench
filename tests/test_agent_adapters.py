@@ -221,6 +221,161 @@ def test_ksp_mcp_rejects_reset_tool_when_disabled() -> None:
     assert responses[1]["error"]["message"] == "unknown KSP tool: reset_launchpad"
 
 
+def test_ksp_mcp_times_out_hung_foreground_process_and_uses_fresh_next_process(
+    tmp_path,
+) -> None:
+    python = tmp_path / "fake_python.py"
+    python.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys, time\n"
+        "marker = os.environ['KSPBENCH_HANG_MARKER']\n"
+        "request = json.loads(sys.stdin.read())\n"
+        "if not os.path.exists(marker):\n"
+        "    handle = open(marker, 'w')\n"
+        "    handle.close()\n"
+        "    time.sleep(60)\n"
+        "print(json.dumps({'result': {'ok': True, 'method': request['method']}}), flush=True)\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    marker = tmp_path / "hung-once"
+    payload = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "observe", "arguments": {}},
+                }
+            ),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "observe", "arguments": {}},
+                }
+            ),
+            "",
+        ]
+    )
+
+    env = {
+        **os.environ,
+        "KSPBENCH_PYTHON": str(python),
+        "KSPBENCH_MCP_TOOL_TIMEOUT": "0.75",
+        "KSPBENCH_HANG_MARKER": str(marker),
+    }
+    completed = subprocess.run(
+        ["bun", "run", "mcp/server.ts"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    assert responses[1]["error"]["code"] == -32000
+    assert "timed out" in responses[1]["error"]["message"]
+    assert json.loads(responses[2]["result"]["content"][0]["text"]) == {
+        "ok": True,
+        "method": "observe",
+    }
+
+
+def test_ksp_mcp_supervises_async_task_processes(tmp_path) -> None:
+    python = tmp_path / "fake_python.py"
+    python.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, pathlib, sys, time\n"
+        "request = json.loads(sys.stdin.read())\n"
+        "status_path = pathlib.Path(request['status_path'])\n"
+        "stop_path = pathlib.Path(request['stop_path'])\n"
+        "status_path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "status_path.write_text(json.dumps({\n"
+        "    'ok': True,\n"
+        "    'task': {'task_id': request['task_id'], 'status': 'running', 'running': True},\n"
+        "    'tasks': [{'task_id': request['task_id'], 'status': 'running', 'running': True}],\n"
+        "    'latest_telemetry': None,\n"
+        "}))\n"
+        "while not stop_path.exists():\n"
+        "    time.sleep(0.05)\n"
+        "status_path.write_text(json.dumps({\n"
+        "    'ok': True,\n"
+        "    'task': {'task_id': request['task_id'], 'status': 'stopped', 'running': False},\n"
+        "    'tasks': [{'task_id': request['task_id'], 'status': 'stopped', 'running': False}],\n"
+        "    'latest_telemetry': None,\n"
+        "}))\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    payload = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "start_task",
+                        "arguments": {"code": "while True: pass", "timeout_s": 5},
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "check_task", "arguments": {"task_id": "task-1"}},
+                }
+            ),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "stop_task", "arguments": {"task_id": "task-1"}},
+                }
+            ),
+            "",
+        ]
+    )
+
+    completed = subprocess.run(
+        ["bun", "run", "mcp/server.ts"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+        env={
+            **os.environ,
+            "KSPBENCH_PYTHON": str(python),
+            "KSPBENCH_RUN_DIR": str(tmp_path / "run"),
+            "KSPBENCH_TASK_STOP_GRACE": "0.2",
+        },
+    )
+
+    assert completed.returncode == 0
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    assert json.loads(responses[1]["result"]["content"][0]["text"]) == {
+        "ok": True,
+        "task_id": "task-1",
+        "status": "running",
+    }
+    checked = json.loads(responses[2]["result"]["content"][0]["text"])
+    stopped = json.loads(responses[3]["result"]["content"][0]["text"])
+    assert checked["task"]["running"] is True
+    assert stopped["task"]["running"] is False
+
+
 def test_extract_usage_parses_common_opencode_text() -> None:
     usage = extract_usage(
         "Prompt tokens: 1,234\nCompletion tokens: 567\nTotal tokens: 1,801\nCost: $0.42",

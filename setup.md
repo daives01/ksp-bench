@@ -36,7 +36,7 @@ The kRPC host and ports live in the OpenCode MCP config, not in scenario files:
 ```
 
 Edit [opencode.json](/Users/ives/Documents/ksp-bench/opencode.json) if your KSP
-server uses a different host or port. The Python worker reads those same env vars.
+server uses a different host or port. Each Python kRPC subprocess reads those same env vars.
 
 ## Prepare References
 
@@ -77,8 +77,16 @@ opencode . --agent ksp
 ```
 
 That direct path starts `mcp/server.ts` through Bun using [opencode.json](/Users/ives/Documents/ksp-bench/opencode.json).
-If `KSPBENCH_RUN_DIR` is not set, the MCP worker creates a run directory under
+If `KSPBENCH_RUN_DIR` is not set, the MCP server creates a run directory under
 `runs/`.
+
+The MCP server runs each foreground KSP tool in a fresh Python process with its
+own kRPC connection. `KSPBENCH_MCP_TOOL_TIMEOUT` controls the default hard
+timeout for those one-shot calls; duration-based tools such as `wait` add
+`KSPBENCH_MCP_TOOL_TIMEOUT_PADDING`. Each `start_task` call runs in its own
+supervised Python process; `KSPBENCH_TASK_TIMEOUT_PADDING`,
+`KSPBENCH_TASK_STOP_GRACE`, and `KSPBENCH_TASK_STATUS_INTERVAL` tune task
+supervision.
 
 ## Artifacts
 

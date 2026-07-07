@@ -304,6 +304,11 @@ class FlightSession:
             self._append_action(action)
 
     def check_task(self, task_id: str | None = None) -> dict[str, Any]:
+        payload = self.task_snapshot(task_id=task_id)
+        self._record_action("check_task", ok=True)
+        return {"ok": True, **payload}
+
+    def task_snapshot(self, task_id: str | None = None) -> dict[str, Any]:
         with self._task_lock:
             if task_id is not None:
                 task = self._tasks.get(task_id)
@@ -313,9 +318,7 @@ class FlightSession:
                 statuses = [self._task_status(task) for task in self._tasks.values()]
                 status = _current_task_status(statuses)
         latest_telemetry = self.telemetry[-1].to_dict() if self.telemetry else None
-        self._record_action("check_task", ok=True)
         return {
-            "ok": True,
             "task": status,
             "tasks": statuses,
             "latest_telemetry": latest_telemetry,

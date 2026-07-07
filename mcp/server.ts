@@ -1,4 +1,12 @@
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -9,14 +17,7 @@ type RpcRequest = {
     params?: Record<string, unknown>;
 };
 
-type WorkerRequest = {
-    id: number;
-    method: string;
-    params: Record<string, unknown>;
-};
-
-type WorkerResponse = {
-    id: number | null;
+type PythonEnvelope = {
     result?: unknown;
     error?: { type?: string; message?: string };
 };
@@ -25,6 +26,45 @@ type ToolDefinition = {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+};
+
+type SelectedVehicle = {
+    name?: string;
+    index?: number;
+    make_active: boolean;
+};
+
+type TaskStatus = {
+    task_id: string;
+    status: string;
+    running: boolean;
+    stop_requested?: boolean;
+    elapsed_s?: number;
+    timeout_s?: number;
+    stdout?: string;
+    result?: unknown;
+    error_type?: string | null;
+    error?: string | null;
+};
+
+type TaskPayload = {
+    ok: boolean;
+    task: TaskStatus | null;
+    tasks: TaskStatus[];
+    latest_telemetry: unknown;
+};
+
+type TaskInfo = {
+    taskID: string;
+    process: Bun.Subprocess<"pipe", "pipe", "pipe">;
+    statusPath: string;
+    stopPath: string;
+    startedMs: number;
+    timeoutS: number;
+    timeout: ReturnType<typeof setTimeout>;
+    exitCode?: number;
+    killedForTimeout: boolean;
+    forceStopped: boolean;
 };
 
 const tools: ToolDefinition[] = [
@@ -217,150 +257,55 @@ const exposedTools = tools.filter(
     (tool) => !privilegedToolNames.has(tool.name) || resetToolEnabled(),
 );
 const toolNames = new Set(exposedTools.map((tool) => tool.name));
+const foregroundToolNames = new Set([
+    "observe",
+    "throttle",
+    "stage",
+    "list_vehicles",
+    "reset_launchpad",
+    "set_vehicle",
+    "attitude",
+    "wait",
+    "execute_python",
+]);
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
-let worker: WorkerClient | undefined;
+const tasks = new Map<string, TaskInfo>();
+let nextTaskID = 1;
+let selectedVehicle: SelectedVehicle | undefined;
+let generatedRunDir: string | undefined;
 
-class WorkerConnectionError extends Error {
+class PythonProcessError extends Error {
     constructor(message: string) {
         super(message);
-        this.name = "WorkerConnectionError";
+        this.name = "PythonProcessError";
     }
 }
 
-class WorkerClient {
-    private process: Bun.Subprocess<"pipe", "pipe", "pipe">;
-    private nextID = 1;
-    private pending = new Map<
-        number,
-        {
-            resolve: (value: unknown) => void;
-            reject: (error: Error) => void;
-        }
-    >();
-    private buffer = "";
-
-    constructor() {
-        const python =
-            process.env.KSPBENCH_PYTHON ??
-            (existsSync(".venv/bin/python") ? ".venv/bin/python" : "python");
-        this.process = Bun.spawn([python, "-m", "bench.ksp_worker"], {
-            stdin: "pipe",
-            stdout: "pipe",
-            stderr: "pipe",
-            env: process.env,
-        });
-        void this.readStdout();
-        void this.readStderr();
-        void this.process.exited.then((code) => {
-            this.rejectPending(
-                new WorkerConnectionError(
-                    `KSP worker exited with code ${code}`,
-                ),
-            );
-        });
-    }
-
-    async call(
-        method: string,
-        params: Record<string, unknown>,
-    ): Promise<unknown> {
-        const id = this.nextID++;
-        const request: WorkerRequest = { id, method, params };
-        const promise = new Promise<unknown>((resolve, reject) => {
-            this.pending.set(id, { resolve, reject });
-        });
-        try {
-            this.process.stdin.write(JSON.stringify(request) + "\n");
-        } catch (error) {
-            this.pending.delete(id);
-            throw new WorkerConnectionError(
-                `could not send request to KSP worker: ${error instanceof Error ? error.message : String(error)}`,
-            );
-        }
-        return promise;
-    }
-
-    async stop(): Promise<void> {
-        try {
-            this.process.stdin.end();
-        } catch {
-            // ignore shutdown races
-        }
-        await this.process.exited;
-    }
-
-    private async readStdout(): Promise<void> {
-        for await (const chunk of this.process.stdout) {
-            this.buffer += decoder.decode(chunk);
-            while (true) {
-                const newline = this.buffer.indexOf("\n");
-                if (newline < 0) break;
-                const line = this.buffer.slice(0, newline);
-                this.buffer = this.buffer.slice(newline + 1);
-                this.handleLine(line);
-            }
-        }
-    }
-
-    private async readStderr(): Promise<void> {
-        for await (const chunk of this.process.stderr) {
-            process.stderr.write(decoder.decode(chunk));
-        }
-    }
-
-    private handleLine(line: string): void {
-        if (!line.trim()) return;
-        let response: WorkerResponse;
-        try {
-            response = JSON.parse(line);
-        } catch (error) {
-            process.stderr.write(`ksp worker emitted invalid JSON: ${line}\n`);
-            return;
-        }
-        if (response.id === null) {
-            if (response.error)
-                process.stderr.write(
-                    `ksp worker error: ${response.error.message}\n`,
-                );
-            return;
-        }
-        const pending = this.pending.get(response.id);
-        if (!pending) return;
-        this.pending.delete(response.id);
-        if (response.error) {
-            pending.reject(
-                new Error(
-                    `${response.error.type ?? "WorkerError"}: ${response.error.message ?? ""}`,
-                ),
-            );
-        } else {
-            pending.resolve(response.result);
-        }
-    }
-
-    private rejectPending(error: Error): void {
-        for (const pending of this.pending.values()) {
-            pending.reject(error);
-        }
-        this.pending.clear();
+class PythonProcessTimeout extends PythonProcessError {
+    constructor(message: string) {
+        super(message);
+        this.name = "PythonProcessTimeout";
     }
 }
 
 async function main(): Promise<void> {
     const stdin = Bun.stdin.stream().pipeThrough(new TextDecoderStream());
     let buffer = "";
-    for await (const chunk of stdin) {
-        buffer += chunk;
-        while (true) {
-            const newline = buffer.indexOf("\n");
-            if (newline < 0) break;
-            const line = buffer.slice(0, newline);
-            buffer = buffer.slice(newline + 1);
-            await handleLine(line);
+    try {
+        for await (const chunk of stdin) {
+            buffer += chunk;
+            while (true) {
+                const newline = buffer.indexOf("\n");
+                if (newline < 0) break;
+                const line = buffer.slice(0, newline);
+                buffer = buffer.slice(newline + 1);
+                await handleLine(line);
+            }
         }
+    } finally {
+        shutdownTasks();
     }
-    await worker?.stop();
 }
 
 async function handleLine(line: string): Promise<void> {
@@ -430,23 +375,395 @@ async function callTool(
     }
     if (!isObject(args)) throw new Error("tool arguments must be an object");
     validateToolArguments(name, args);
-    worker ??= new WorkerClient();
+
     let result: unknown;
-    try {
-        result = await worker.call(name, args);
-    } catch (error) {
-        if (!(error instanceof WorkerConnectionError)) throw error;
-        process.stderr.write(
-            `ksp worker disconnected; restarting and retrying ${name}\n`,
-        );
-        worker = new WorkerClient();
-        result = await worker.call(name, args);
+    if (name === "start_task") {
+        result = startTask(args);
+    } else if (name === "check_task") {
+        result = checkTask(optionalString(args.task_id));
+    } else if (name === "stop_task") {
+        result = await stopTask(optionalString(args.task_id));
+    } else if (foregroundToolNames.has(name)) {
+        result = await callForegroundTool(name, args);
+    } else {
+        throw new Error(`unknown KSP tool: ${name}`);
     }
+
     const text = JSON.stringify(result, null, 2);
     return {
         content: [{ type: "text", text }],
         isError: isObject(result) && result.ok === false,
     };
+}
+
+async function callForegroundTool(
+    name: string,
+    args: Record<string, unknown>,
+): Promise<unknown> {
+    const result = await runPythonJson(
+        "bench.ksp_call",
+        {
+            method: name,
+            params: args,
+            selected_vehicle: selectedVehicle ?? null,
+        },
+        toolTimeoutSeconds(name, args),
+    );
+    if (isObject(result) && result.ok !== false) {
+        if (name === "set_vehicle") {
+            const selection = selectedVehicleFromArgs(args);
+            selectedVehicle = selection.make_active ? undefined : selection;
+        } else if (name === "reset_launchpad") {
+            selectedVehicle = undefined;
+        }
+    }
+    return result;
+}
+
+function startTask(args: Record<string, unknown>): Record<string, unknown> {
+    const code = requiredString(args, "code");
+    const timeoutS = taskTimeoutSeconds(args.timeout_s);
+    const taskID = `task-${nextTaskID++}`;
+    const taskDir = join(sessionRunDir(), "mcp_tasks", taskID);
+    mkdirSync(taskDir, { recursive: true });
+    const statusPath = join(taskDir, "status.json");
+    const stopPath = join(taskDir, "stop");
+    rmSync(stopPath, { force: true });
+
+    const child = spawnPython("bench.ksp_task");
+    const info: TaskInfo = {
+        taskID,
+        process: child,
+        statusPath,
+        stopPath,
+        startedMs: Date.now(),
+        timeoutS,
+        timeout: setTimeout(() => {
+            info.killedForTimeout = true;
+            writeTaskPayload(info, timedOutTaskPayload(info));
+            killProcess(info.process);
+        }, (timeoutS + taskTimeoutPaddingSeconds()) * 1000),
+        killedForTimeout: false,
+        forceStopped: false,
+    };
+    tasks.set(taskID, info);
+
+    void drainTaskOutput(info);
+    void child.exited.then((code) => {
+        info.exitCode = code;
+        clearTimeout(info.timeout);
+    });
+
+    writeTaskPayload(info, runningTaskPayload(info));
+    child.stdin.write(
+        JSON.stringify({
+            task_id: taskID,
+            code,
+            timeout_s: timeoutS,
+            status_path: statusPath,
+            stop_path: stopPath,
+            selected_vehicle: selectedVehicle ?? null,
+        }) + "\n",
+    );
+    child.stdin.end();
+    return { ok: true, task_id: taskID, status: "running" };
+}
+
+function checkTask(taskID: string | undefined): TaskPayload {
+    if (taskID) {
+        const info = tasks.get(taskID);
+        const payload = info ? readTaskPayload(info) : emptyTaskPayload();
+        return {
+            ok: true,
+            task: payload.task,
+            tasks: payload.task ? [payload.task] : [],
+            latest_telemetry: payload.latest_telemetry,
+        };
+    }
+
+    const payloads = [...tasks.values()].map(readTaskPayload);
+    const statuses = payloads.flatMap((payload) =>
+        payload.task ? [payload.task] : [],
+    );
+    return {
+        ok: true,
+        task: currentTaskStatus(statuses),
+        tasks: statuses,
+        latest_telemetry:
+            [...payloads].reverse().find((payload) => payload.latest_telemetry)
+                ?.latest_telemetry ?? null,
+    };
+}
+
+async function stopTask(taskID: string | undefined): Promise<Record<string, unknown>> {
+    const info = taskToStop(taskID);
+    if (!info) return { ok: true, task: null };
+
+    writeFileSync(info.stopPath, "stop\n", "utf-8");
+    const graceMs = numberEnv("KSPBENCH_TASK_STOP_GRACE", 1) * 1000;
+    await sleep(graceMs);
+    const payload = readTaskPayload(info);
+    if (payload.task?.running) {
+        info.forceStopped = true;
+        const stopped = stoppedTaskPayload(info, "force_stopped");
+        writeTaskPayload(info, stopped);
+        killProcess(info.process);
+        return { ok: true, task: stopped.task };
+    }
+    return { ok: true, task: payload.task };
+}
+
+function taskToStop(taskID: string | undefined): TaskInfo | undefined {
+    if (taskID) return tasks.get(taskID);
+
+    const running = [...tasks.values()].filter(
+        (task) => readTaskPayload(task).task?.running,
+    );
+    if (running.length > 1) {
+        const ids = running.map((task) => task.taskID).join(", ");
+        throw new Error(`multiple tasks are running; pass task_id (${ids})`);
+    }
+    if (running.length === 1) return running[0];
+    return [...tasks.values()].at(-1);
+}
+
+async function runPythonJson(
+    moduleName: string,
+    payload: Record<string, unknown>,
+    timeoutS: number,
+): Promise<unknown> {
+    const child = spawnPython(moduleName);
+    const stdoutPromise = readStream(child.stdout);
+    const stderrPromise = readStream(child.stderr);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        killProcess(child);
+    }, timeoutS * 1000);
+
+    child.stdin.write(JSON.stringify(payload) + "\n");
+    child.stdin.end();
+    const exitCode = await child.exited.finally(() => clearTimeout(timeout));
+    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+    if (stderr.trim()) process.stderr.write(stderr);
+    if (timedOut) {
+        throw new PythonProcessTimeout(
+            `${moduleName} timed out after ${timeoutS.toFixed(3)}s`,
+        );
+    }
+
+    const envelope = parsePythonEnvelope(stdout);
+    if (envelope.error) {
+        throw new PythonProcessError(
+            `${envelope.error.type ?? "PythonError"}: ${envelope.error.message ?? ""}`,
+        );
+    }
+    if (exitCode !== 0) {
+        throw new PythonProcessError(
+            `${moduleName} exited with code ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+        );
+    }
+    return envelope.result;
+}
+
+function spawnPython(moduleName: string): Bun.Subprocess<"pipe", "pipe", "pipe"> {
+    const python =
+        process.env.KSPBENCH_PYTHON ??
+        (existsSync(".venv/bin/python") ? ".venv/bin/python" : "python");
+    return Bun.spawn([python, "-m", moduleName], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: childEnv(),
+    });
+}
+
+function childEnv(): Record<string, string | undefined> {
+    return {
+        ...process.env,
+        KSPBENCH_RUN_DIR: sessionRunDir(),
+    };
+}
+
+function sessionRunDir(): string {
+    const configured = process.env.KSPBENCH_RUN_DIR;
+    if (configured) {
+        mkdirSync(configured, { recursive: true });
+        return configured;
+    }
+    generatedRunDir ??= join(
+        process.cwd(),
+        "runs",
+        `${timestamp()}_${randomUUID().slice(0, 8)}_opencode_agent`,
+    );
+    mkdirSync(generatedRunDir, { recursive: true });
+    return generatedRunDir;
+}
+
+async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+    let text = "";
+    for await (const chunk of stream) {
+        text += decoder.decode(chunk);
+    }
+    return text;
+}
+
+async function drainTaskOutput(info: TaskInfo): Promise<void> {
+    const [stdout, stderr] = await Promise.all([
+        readStream(info.process.stdout),
+        readStream(info.process.stderr),
+    ]);
+    if (stdout.trim()) {
+        process.stderr.write(`ksp task ${info.taskID} stdout: ${stdout}`);
+    }
+    if (stderr.trim()) {
+        process.stderr.write(stderr);
+    }
+}
+
+function parsePythonEnvelope(stdout: string): PythonEnvelope {
+    const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
+    if (lines.length !== 1) {
+        throw new PythonProcessError(
+            `expected one JSON response from Python, got ${lines.length}`,
+        );
+    }
+    const parsed = JSON.parse(lines[0]);
+    if (!isObject(parsed)) {
+        throw new PythonProcessError("Python response must be an object");
+    }
+    return parsed as PythonEnvelope;
+}
+
+function readTaskPayload(info: TaskInfo): TaskPayload {
+    if (info.killedForTimeout) return timedOutTaskPayload(info);
+    if (info.forceStopped) return stoppedTaskPayload(info, "force_stopped");
+    try {
+        const parsed = JSON.parse(readFileSync(info.statusPath, "utf-8"));
+        if (isTaskPayload(parsed)) return parsed;
+    } catch {
+        // Fall through to process-derived status.
+    }
+    if (info.exitCode !== undefined && info.exitCode !== 0) {
+        return failedTaskPayload(info, `task process exited with code ${info.exitCode}`);
+    }
+    if (info.exitCode !== undefined) return stoppedTaskPayload(info, "exited");
+    return runningTaskPayload(info);
+}
+
+function writeTaskPayload(info: TaskInfo, payload: TaskPayload): void {
+    mkdirSync(join(sessionRunDir(), "mcp_tasks", info.taskID), { recursive: true });
+    writeFileSync(info.statusPath, JSON.stringify(payload, null, 2) + "\n", "utf-8");
+}
+
+function runningTaskPayload(info: TaskInfo): TaskPayload {
+    const task: TaskStatus = {
+        task_id: info.taskID,
+        status: "running",
+        running: true,
+        stop_requested: false,
+        elapsed_s: elapsedSeconds(info),
+        timeout_s: info.timeoutS,
+        stdout: "",
+        result: null,
+        error_type: null,
+        error: null,
+    };
+    return { ok: true, task, tasks: [task], latest_telemetry: null };
+}
+
+function timedOutTaskPayload(info: TaskInfo): TaskPayload {
+    const task: TaskStatus = {
+        task_id: info.taskID,
+        status: "timed_out",
+        running: false,
+        stop_requested: false,
+        elapsed_s: elapsedSeconds(info),
+        timeout_s: info.timeoutS,
+        stdout: "",
+        result: null,
+        error_type: "TaskTimeout",
+        error: `task exceeded ${info.timeoutS.toFixed(3)}s`,
+    };
+    return { ok: true, task, tasks: [task], latest_telemetry: null };
+}
+
+function stoppedTaskPayload(info: TaskInfo, status: string): TaskPayload {
+    const task: TaskStatus = {
+        task_id: info.taskID,
+        status,
+        running: false,
+        stop_requested: true,
+        elapsed_s: elapsedSeconds(info),
+        timeout_s: info.timeoutS,
+        stdout: "",
+        result: null,
+        error_type: null,
+        error: null,
+    };
+    return { ok: true, task, tasks: [task], latest_telemetry: null };
+}
+
+function failedTaskPayload(info: TaskInfo, error: string): TaskPayload {
+    const task: TaskStatus = {
+        task_id: info.taskID,
+        status: "failed",
+        running: false,
+        elapsed_s: elapsedSeconds(info),
+        timeout_s: info.timeoutS,
+        stdout: "",
+        result: null,
+        error_type: "TaskProcessError",
+        error,
+    };
+    return { ok: true, task, tasks: [task], latest_telemetry: null };
+}
+
+function emptyTaskPayload(): TaskPayload {
+    return { ok: true, task: null, tasks: [], latest_telemetry: null };
+}
+
+function isTaskPayload(value: unknown): value is TaskPayload {
+    if (!isObject(value)) return false;
+    return (
+        typeof value.ok === "boolean" &&
+        (value.task === null || isObject(value.task)) &&
+        Array.isArray(value.tasks)
+    );
+}
+
+function currentTaskStatus(statuses: TaskStatus[]): TaskStatus | null {
+    const running = statuses.filter((status) => status.running);
+    if (running.length) return running.at(-1) ?? null;
+    return statuses.at(-1) ?? null;
+}
+
+function selectedVehicleFromArgs(args: Record<string, unknown>): SelectedVehicle {
+    const makeActive =
+        args.make_active === undefined || args.make_active === null
+            ? true
+            : args.make_active === true;
+    if (typeof args.name === "string") {
+        return { name: args.name, make_active: makeActive };
+    }
+    return { index: requiredInteger(args, "index"), make_active: makeActive };
+}
+
+function shutdownTasks(): void {
+    for (const info of tasks.values()) {
+        clearTimeout(info.timeout);
+        if (readTaskPayload(info).task?.running) {
+            killProcess(info.process);
+        }
+    }
+}
+
+function killProcess(child: Bun.Subprocess<"pipe", "pipe", "pipe">): void {
+    try {
+        child.kill();
+    } catch {
+        // ignore already-exited children
+    }
 }
 
 function write(payload: Json): void {
@@ -473,6 +790,60 @@ function truthyEnv(value: string | undefined): boolean {
     return (
         value === "1" || value === "true" || value === "yes" || value === "on"
     );
+}
+
+function toolTimeoutSeconds(
+    name: string,
+    args: Record<string, unknown>,
+): number {
+    const defaultTimeout = numberEnv("KSPBENCH_MCP_TOOL_TIMEOUT", 5);
+    const pollInterval = numberEnv("KSPBENCH_POLL_INTERVAL", 0.5);
+    const padding = numberEnv(
+        "KSPBENCH_MCP_TOOL_TIMEOUT_PADDING",
+        Math.max(1, pollInterval * 2),
+    );
+    switch (name) {
+        case "wait":
+            return Math.max(defaultTimeout, optionalNumber(args.seconds) + padding);
+        case "execute_python":
+            return Math.max(
+                defaultTimeout,
+                boundedExecutionTimeout(args.timeout_s) + padding,
+            );
+        case "reset_launchpad":
+            return Math.max(defaultTimeout, optionalNumber(args.wait_s) + padding);
+        default:
+            return defaultTimeout;
+    }
+}
+
+function boundedExecutionTimeout(value: unknown): number {
+    const requested = optionalNumber(value);
+    const defaultExecution = numberEnv("KSPBENCH_EXECUTION_TIMEOUT", 15);
+    const maxSync = numberEnv("KSPBENCH_MAX_SYNC_PYTHON", 8);
+    const effective = requested > 0 ? requested : defaultExecution;
+    return Math.min(effective, maxSync);
+}
+
+function taskTimeoutSeconds(value: unknown): number {
+    const requested = optionalNumber(value);
+    return requested > 0 ? requested : numberEnv("KSPBENCH_TASK_TIMEOUT", 180);
+}
+
+function taskTimeoutPaddingSeconds(): number {
+    return numberEnv("KSPBENCH_TASK_TIMEOUT_PADDING", 2);
+}
+
+function elapsedSeconds(info: TaskInfo): number {
+    return Math.round(((Date.now() - info.startedMs) / 1000) * 1000) / 1000;
+}
+
+function timestamp(): string {
+    return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function validateToolArguments(
@@ -590,6 +961,12 @@ function rejectUnexpected(
     }
 }
 
+function requiredString(args: Record<string, unknown>, key: string): string {
+    const value = args[key];
+    if (typeof value !== "string") throw new Error(`${key} must be a string`);
+    return value;
+}
+
 function requiredNumber(args: Record<string, unknown>, key: string): number {
     const value = args[key];
     if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -602,6 +979,21 @@ function requiredInteger(args: Record<string, unknown>, key: string): number {
     const value = requiredNumber(args, key);
     if (!Number.isInteger(value)) throw new Error(`${key} must be an integer`);
     return value;
+}
+
+function optionalNumber(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function optionalString(value: unknown): string | undefined {
+    return typeof value === "string" ? value : undefined;
+}
+
+function numberEnv(name: string, fallback: number): number {
+    const value = process.env[name];
+    if (value === undefined) return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

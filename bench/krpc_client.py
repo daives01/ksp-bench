@@ -295,9 +295,7 @@ def _is_controllable(vessel: Any) -> bool:
 
 def _is_intact(vessel: Any) -> bool:
     situation = _enum_name(_safe_value(lambda: vessel.situation, default="unknown")).lower()
-    if situation in {"crashed", "destroyed", "dead"}:
-        return False
-    return True
+    return situation not in {"crashed", "destroyed", "dead"}
 
 
 def _set_unpaused(space_center: Any) -> None:
