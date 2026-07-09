@@ -327,7 +327,7 @@ def test_structured_controls_log_actions(tmp_path) -> None:
     assert throttle["ok"] is True
     assert controller.vessel.control.throttle == 0.7
     assert stage["activated_parts"] == 1
-    assert controller.vessel.control.sas is True
+    assert controller.vessel.control.sas is False
     assert controller.vessel.auto_pilot.pitch == 80
     assert prograde["reference_frame"] == "orbital"
     assert normal["mode"] == "normal"
@@ -498,6 +498,32 @@ def test_background_task_reports_result_and_stdout(tmp_path) -> None:
     assert status["task"]["status"] == "done"
     assert status["task"]["result"]["met"] > 0
     assert "done" in status["task"]["stdout"]
+
+
+def test_background_task_events_can_use_external_task_id(tmp_path) -> None:
+    session = _session(tmp_path, poll_interval_s=0.01)
+
+    started = session.start_task(
+        "print('done')\nresult = 'ok'",
+        event_task_id="external-task-1",
+    )
+    assert started["ok"] is True
+
+    deadline = time.monotonic() + 1.0
+    status = session.check_task(task_id=started["task_id"])
+    while status["task"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = session.check_task(task_id=started["task_id"])
+
+    events = [
+        json.loads(line)
+        for line in (session.artifacts.run_dir / "events.jsonl").read_text().splitlines()
+    ]
+    finished = [event for event in events if event["type"] == "control_task_finished"]
+
+    assert status["task"]["status"] == "done"
+    assert finished
+    assert finished[-1]["task_id"] == "external-task-1"
 
 
 def test_wait_in_atmosphere_does_not_time_warp(tmp_path) -> None:

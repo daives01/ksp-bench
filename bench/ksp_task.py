@@ -36,7 +36,7 @@ def main() -> int:
         tools = make_tools(controller=controller, scenario=scenario, artifacts=artifacts)
         artifacts.append_event({"type": "ksp_mcp_task_process_started", "task_id": task_id})
 
-        started = tools.start_task(code, timeout_s=timeout_s)
+        started = tools.start_task(code, timeout_s=timeout_s, event_task_id=task_id)
         if not started.get("ok"):
             task = {
                 "task_id": task_id,

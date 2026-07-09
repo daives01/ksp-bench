@@ -34,20 +34,13 @@ class TaskStopped(FlightToolError):
     """Raised when a background task observes a cooperative stop request."""
 
 
-def _enable_sas_if_needed(vessel: Any) -> bool:
-    control = vessel.control
-    if not control.sas:
-        control.sas = True
-        return True
-    return False
-
-
 @dataclass
 class ControlTask:
     task_id: str
     code: str
     timeout_s: float
     started_monotonic: float
+    event_task_id: str | None = None
     status: str = "running"
     stdout: str = ""
     result: Any = None
@@ -178,7 +171,6 @@ class FlightSession:
 
             def apply() -> dict[str, Any]:
                 vessel = self.controller.vessel
-                _enable_sas_if_needed(vessel)
                 autopilot = vessel.auto_pilot
                 autopilot.engage()
                 autopilot.target_pitch_and_heading(pitch, heading)
@@ -188,7 +180,6 @@ class FlightSession:
 
         def apply() -> dict[str, Any]:
             vessel = self.controller.vessel
-            _enable_sas_if_needed(vessel)
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
             direction = _flight_direction(flight, mode)
@@ -272,7 +263,13 @@ class FlightSession:
         finally:
             self._append_action(action)
 
-    def start_task(self, code: str, *, timeout_s: float | None = None) -> dict[str, Any]:
+    def start_task(
+        self,
+        code: str,
+        *,
+        timeout_s: float | None = None,
+        event_task_id: str | None = None,
+    ) -> dict[str, Any]:
         budget_s = self._timeout(timeout_s, default=self.task_timeout_s)
         started = time.monotonic()
         action: dict[str, Any] = {
@@ -292,6 +289,7 @@ class FlightSession:
                     code=code,
                     timeout_s=budget_s,
                     started_monotonic=time.monotonic(),
+                    event_task_id=event_task_id,
                 )
                 self._tasks[task_id] = task
             thread = threading.Thread(
@@ -546,7 +544,7 @@ class FlightSession:
                 self.artifacts.append_event(
                     {
                         "type": "control_task_finished",
-                        "task_id": task.task_id,
+                        "task_id": task.event_task_id or task.task_id,
                         "status": task.status,
                         "error_type": task.error_type,
                         "error": task.error,
@@ -853,7 +851,6 @@ class FlightSession:
                 if pitch is None or heading is None:
                     raise ValueError("pitch and heading are required for pitch_heading mode")
                 vessel = controller.vessel
-                _enable_sas_if_needed(vessel)
                 autopilot = vessel.auto_pilot
                 autopilot.engage()
                 autopilot.target_pitch_and_heading(float(pitch), float(heading))
@@ -866,7 +863,6 @@ class FlightSession:
                 }
 
             vessel = controller.vessel
-            _enable_sas_if_needed(vessel)
             frame = _reference_frame(vessel, reference_frame)
             flight = vessel.flight(frame)
             direction = _flight_direction(flight, mode)
