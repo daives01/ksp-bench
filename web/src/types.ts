@@ -23,6 +23,16 @@ export type TelemetrySample = {
   time_to_periapsis_s?: number;
   eccentricity: number;
   inclination_deg: number;
+  latitude_deg?: number | null;
+  longitude_deg?: number | null;
+};
+
+/** A small, browser-facing trace. `points` use the names in `columns`. */
+export type FlightTrace = {
+  schemaVersion?: number;
+  intervalS?: number;
+  columns: string[];
+  points: Array<Array<number | null>>;
 };
 
 export type BenchmarkRun = {
@@ -75,6 +85,8 @@ export type BenchmarkRun = {
     output_tokens: number | null;
     total_tokens: number | null;
   };
+  flight?: FlightTrace;
+  /** Legacy public datasets. Normalized to `flight` while loading. */
   telemetry: TelemetrySample[];
 };
 
