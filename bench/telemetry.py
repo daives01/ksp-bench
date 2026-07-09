@@ -30,6 +30,10 @@ class TelemetrySample:
     time_to_periapsis_s: float = 0.0
     eccentricity: float = 0.0
     inclination_deg: float = 0.0
+    # Geographic position is deliberately optional: it was added after the
+    # initial artifact format, and lets older runs remain scoreable.
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> TelemetrySample:

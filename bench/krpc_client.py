@@ -131,6 +131,8 @@ class KRPCController:
             time_to_periapsis_s=_safe_float(lambda: orbit.time_to_periapsis),
             eccentricity=_safe_float(lambda: orbit.eccentricity),
             inclination_deg=_safe_float(lambda: orbit.inclination),
+            latitude_deg=_safe_float(lambda: flight.latitude),
+            longitude_deg=_safe_float(lambda: flight.longitude),
         )
 
     def read_vehicle_state(self) -> dict[str, Any]:

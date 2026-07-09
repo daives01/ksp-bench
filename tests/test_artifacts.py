@@ -53,12 +53,13 @@ def test_writes_score_and_summary(tmp_path: Path) -> None:
     assert score["final_orbit"]["apoapsis_m"] == 10000.0
     assert score["fuel_remaining"]["liquid_fuel"] == 100.0
     assert score["time"]["mission_elapsed_s"] == 10.0
-    assert (tmp_path / "run-1" / "telemetry.csv").exists()
-    waypoints = json.loads(
-        (tmp_path / "run-1" / "telemetry_waypoints.json").read_text(encoding="utf-8")
-    )
+    assert (tmp_path / "run-1" / "telemetry.jsonl").exists()
+    waypoints = json.loads((tmp_path / "run-1" / "flight.json").read_text(encoding="utf-8"))
     assert waypoints["interval_s"] == 10.0
-    assert len(waypoints["samples"]) == 1
+    assert waypoints["columns"] == [
+        "t", "alt", "apo", "peri", "lat", "lon", "speed", "stage", "fuel", "q"
+    ]
+    assert len(waypoints["points"]) == 1
     assert (tmp_path / "run-1" / "summary.txt").exists()
 
 

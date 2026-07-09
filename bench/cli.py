@@ -601,8 +601,8 @@ def _finalize_run(
 def _score(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     scenario = load_scenario(run_dir / "scenario.toml")
-    telemetry_path = run_dir / "telemetry.csv"
-    telemetry = _read_telemetry(telemetry_path) if telemetry_path.exists() else []
+    telemetry_path = run_dir / "telemetry.jsonl"
+    telemetry = _read_telemetry_artifact(run_dir)
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     actions = _read_jsonl(run_dir / "action_log.jsonl")
     invalid_actions = sum(

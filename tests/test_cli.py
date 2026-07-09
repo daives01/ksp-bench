@@ -135,7 +135,7 @@ def test_run_terminated_event_is_detected_for_finalization(tmp_path) -> None:
     assert _has_run_terminated(run_dir) is True
 
 
-def test_score_handles_missing_telemetry_csv(tmp_path) -> None:
+def test_score_handles_missing_telemetry(tmp_path) -> None:
     run_dir = tmp_path / "incomplete-run"
     run_dir.mkdir()
     shutil.copyfile("scenarios/kerbin_orbit_80km.toml", run_dir / "scenario.toml")
@@ -164,5 +164,5 @@ def test_score_handles_missing_telemetry_csv(tmp_path) -> None:
     assert "failure_reason" not in score
     assert score["final_orbit"]["situation"] == "no_telemetry"
     assert score["diagnostics"]["invalid_actions"] == 1
-    assert (run_dir / "telemetry.csv").exists()
-    assert (run_dir / "telemetry_waypoints.json").exists()
+    assert (run_dir / "telemetry.jsonl").exists()
+    assert (run_dir / "flight.json").exists()

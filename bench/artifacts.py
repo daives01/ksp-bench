@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import platform
@@ -16,7 +15,7 @@ from bench import __version__
 from bench.config import Scenario
 from bench.krpc_client import KRPCConfig
 from bench.scoring import ScoreResult
-from bench.telemetry import TELEMETRY_COLUMNS, TelemetrySample
+from bench.telemetry import TelemetrySample
 
 
 class RunArtifacts:
@@ -76,11 +75,16 @@ class RunArtifacts:
         self.append_jsonl("telemetry.jsonl", sample.to_dict())
 
     def write_telemetry(self, samples: list[TelemetrySample]) -> None:
-        with (self.run_dir / "telemetry.csv").open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=TELEMETRY_COLUMNS)
-            writer.writeheader()
+        """Write the canonical trace once.
+
+        Earlier runs wrote both telemetry.jsonl and telemetry.csv, duplicating
+        the highest-volume artifact. JSONL is easier to stream during a run and
+        retains types, so it is now the sole canonical raw record.
+        """
+        path = self.run_dir / "telemetry.jsonl"
+        with path.open("w", encoding="utf-8") as handle:
             for sample in samples:
-                writer.writerow(sample.to_dict())
+                handle.write(json.dumps(sample.to_dict(), sort_keys=True) + "\n")
 
     def write_telemetry_waypoints(
         self,
@@ -90,10 +94,28 @@ class RunArtifacts:
     ) -> None:
         waypoints = telemetry_waypoints(samples, interval_s=interval_s)
         self.write_json(
-            "telemetry_waypoints.json",
+            "flight.json",
             {
+                "schema_version": 1,
                 "interval_s": interval_s,
-                "samples": [sample.to_dict() for sample in waypoints],
+                # Compact public/visualization trace.  Field names are kept in
+                # one place; individual points are positional tuples.
+                "columns": ["t", "alt", "apo", "peri", "lat", "lon", "speed", "stage", "fuel", "q"],
+                "points": [
+                    [
+                        round(sample.mission_elapsed_s, 2),
+                        round(sample.altitude_m, 1),
+                        round(sample.apoapsis_m, 1),
+                        round(sample.periapsis_m, 1),
+                        None if sample.latitude_deg is None else round(sample.latitude_deg, 5),
+                        None if sample.longitude_deg is None else round(sample.longitude_deg, 5),
+                        round(sample.orbital_speed_m_s, 1),
+                        sample.stage,
+                        round(sample.liquid_fuel + sample.oxidizer + sample.solid_fuel, 2),
+                        round(sample.dynamic_pressure_pa, 1),
+                    ]
+                    for sample in waypoints
+                ],
             },
         )
 
