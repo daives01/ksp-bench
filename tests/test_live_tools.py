@@ -343,7 +343,7 @@ def test_structured_controls_log_actions(tmp_path) -> None:
 
 def test_krpc_controller_reverts_to_unpaused_launchpad() -> None:
     scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
-    launch_vessel = SimpleNamespace(name="Kerbal 1")
+    launch_vessel = SimpleNamespace(name="Kerbal 1", control=SimpleNamespace(throttle=1.0))
     space_center = SimpleNamespace(
         active_vessel=launch_vessel,
         paused=True,
@@ -357,12 +357,51 @@ def test_krpc_controller_reverts_to_unpaused_launchpad() -> None:
 
     space_center.revert_to_launch = revert_to_launch
     controller = KRPCController(SimpleNamespace(space_center=space_center), scenario)
+    controller.validate_launchpad_state = lambda: None
 
     controller.prepare_for_launchpad_run(wait_s=0.0)
 
     assert space_center.revert_calls == 1
     assert space_center.paused is False
+    assert launch_vessel.control.throttle == 0.0
     assert controller.vessel is launch_vessel
+
+
+def test_launchpad_preflight_rejects_non_prelaunch_state() -> None:
+    scenario = load_scenario("scenarios/kerbin_orbit_80km.toml")
+    vessel = SimpleNamespace(name="Kerbal 1", control=SimpleNamespace(throttle=0.0))
+    conn = SimpleNamespace(space_center=SimpleNamespace(active_vessel=vessel))
+    controller = KRPCController(conn, scenario)
+    controller.read_telemetry = lambda: TelemetrySample(
+        mission_elapsed_s=20.0,
+        altitude_m=100.0,
+        surface_altitude_m=100.0,
+        apoapsis_m=1000.0,
+        periapsis_m=-500000.0,
+        surface_speed_m_s=10.0,
+        orbital_speed_m_s=100.0,
+        vertical_speed_m_s=1.0,
+        pitch_deg=90.0,
+        heading_deg=90.0,
+        roll_deg=0.0,
+        stage=1,
+        liquid_fuel=100.0,
+        oxidizer=100.0,
+        solid_fuel=100.0,
+        dynamic_pressure_pa=0.0,
+        situation="flying",
+        body="Kerbin",
+        controllable=True,
+        intact=True,
+    )
+
+    try:
+        controller.validate_launchpad_state()
+    except RuntimeError as exc:
+        assert "situation" in str(exc)
+        assert "mission elapsed time" in str(exc)
+    else:
+        raise AssertionError("preflight should reject an in-progress flight")
 
 
 def test_krpc_controller_selects_scenario_vessel_when_active_vessel_differs() -> None:

@@ -19,6 +19,8 @@ def publish_run(
     public_data_dir: Path = DEFAULT_PUBLIC_DATA_DIR,
 ) -> bool:
     """Publish only an improved result for its model/thinking-level entry."""
+    if score.diagnostics.get("valid_run") is False:
+        return False
     manifest = _read_json(run_dir / "manifest.json")
     agent_process = _read_json(run_dir / "agent_process.json")
     flight = _read_json(run_dir / "flight.json")

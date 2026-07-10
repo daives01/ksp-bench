@@ -81,6 +81,44 @@ def test_unstable_orbit_scores_lower() -> None:
     assert result.diagnostics["stable_orbit"] is False
 
 
+def test_orbit_credit_requires_the_intended_body_and_live_vessel() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+    invalid_finals = [
+        _sample(body="Mun"),
+        _sample(situation="flying"),
+        _sample(intact=False),
+        _sample(controllable=False),
+    ]
+
+    for final in invalid_finals:
+        result = score_trace(
+            run_id="test",
+            scenario=scenario,
+            telemetry=[final],
+            agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+            harness_version="test",
+        )
+        assert result.diagnostics["stable_orbit"] is False
+        assert result.score == 20.0
+
+
+def test_invalid_run_is_visible_in_score_diagnostics() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    result = score_trace(
+        run_id="test",
+        scenario=scenario,
+        telemetry=[_sample()],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+        valid_run=False,
+        invalid_reason="agent_or_infrastructure_failure",
+    )
+
+    assert result.diagnostics["valid_run"] is False
+    assert result.diagnostics["invalid_reason"] == "agent_or_infrastructure_failure"
+
+
 def test_stable_orbit_misses_target_but_keeps_partial_credit() -> None:
     scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
 

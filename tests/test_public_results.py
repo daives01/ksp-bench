@@ -78,3 +78,13 @@ def test_publishes_only_the_best_model_and_thinking_level_run(tmp_path: Path) ->
     assert index["runs"][0]["runId"] == "better"
     assert not (public_data_dir / "runs" / "first.json").exists()
     assert not (public_data_dir / "flights" / "first.json").exists()
+
+
+def test_does_not_publish_invalid_run(tmp_path: Path) -> None:
+    public_data_dir = tmp_path / "public-data"
+    run_dir = _run_dir(tmp_path, "invalid")
+    score = _score("invalid", 100)
+    score.diagnostics["valid_run"] = False
+
+    assert not publish_run(run_dir=run_dir, score=score, public_data_dir=public_data_dir)
+    assert not (public_data_dir / "index.json").exists()

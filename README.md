@@ -30,7 +30,7 @@ Install the Python environment:
 uv sync
 ```
 
-Check the local harness and optional kRPC connectivity:
+Check the local harness and kRPC connectivity:
 
 ```bash
 uv run kspbench doctor

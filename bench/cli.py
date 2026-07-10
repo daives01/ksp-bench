@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser(
         "doctor",
-        help="check local harness and optional KSP connectivity",
+        help="check local harness and KSP connectivity",
     )
     doctor.add_argument("scenario", nargs="?", default="scenarios/kerbin_orbit_80km.toml")
     doctor.set_defaults(func=_doctor)
@@ -275,7 +275,7 @@ def _doctor(args: argparse.Namespace) -> int:
     for name, ok, detail in checks:
         marker = "ok" if ok else "fail"
         print(f"{marker:4} {name}: {detail}")
-    required_ok = checks[0][1] and checks[1][1]
+    required_ok = all(check[1] for check in checks)
     return 0 if required_ok else 1
 
 
@@ -363,6 +363,8 @@ def _agent(args: argparse.Namespace) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     scenario = load_scenario(args.scenario)
+    if not _preflight_launchpad(scenario):
+        return 2
     adapter = OpenCodeAgentAdapter(
         model=args.model,
         thinking_level=args.thinking_level,
@@ -545,12 +547,30 @@ def _batch_models(args: argparse.Namespace) -> list[str]:
 
 
 def _reset_launchpad(scenario: Scenario) -> bool:
+    controller: KRPCController | None = None
     try:
         controller = KRPCController.connect(scenario)
         controller.prepare_for_launchpad_run()
     except Exception as exc:
         print(f"Could not reset KSP to launchpad: {exc}")
         return False
+    finally:
+        if controller is not None:
+            controller.close()
+    return True
+
+
+def _preflight_launchpad(scenario: Scenario) -> bool:
+    controller: KRPCController | None = None
+    try:
+        controller = KRPCController.connect(scenario)
+        controller.validate_launchpad_state()
+    except Exception as exc:
+        print(f"KSP launchpad preflight failed: {exc}")
+        return False
+    finally:
+        if controller is not None:
+            controller.close()
     return True
 
 
@@ -584,6 +604,8 @@ def _finalize_run(
     telemetry_waypoint_interval: float,
     wall_clock_elapsed_s: float | None = None,
 ):
+    valid_run = exit_code == 0
+    invalid_reason = None if valid_run else "agent_or_infrastructure_failure"
     artifacts.write_telemetry(telemetry)
     artifacts.write_telemetry_waypoints(
         telemetry,
@@ -598,6 +620,8 @@ def _finalize_run(
         invalid_actions=invalid_actions,
         action_count=action_count,
         wall_clock_elapsed_s=wall_clock_elapsed_s,
+        valid_run=valid_run,
+        invalid_reason=invalid_reason,
     )
     artifacts.write_score(score)
     artifacts.write_summary(score)
@@ -608,7 +632,9 @@ def _finalize_run(
             "exit_code": exit_code,
         }
     )
-    if publish_run(run_dir=artifacts.run_dir, score=score):
+    if not valid_run:
+        print("Run is invalid and was not published")
+    elif publish_run(run_dir=artifacts.run_dir, score=score):
         print(f"Published best result for {agent.get('model')}")
     else:
         print(f"Kept existing best result for {agent.get('model')}")

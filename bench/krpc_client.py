@@ -257,12 +257,15 @@ class KRPCController:
 
         revert()
         _set_unpaused(space_center)
+        _set_no_time_warp(space_center)
 
         deadline = time.monotonic() + max(wait_s, 0.0)
         while time.monotonic() < deadline:
             try:
                 self.vessel = space_center.active_vessel
                 if not self.scenario.vessel_name or self.vessel.name == self.scenario.vessel_name:
+                    self.vessel.control.throttle = 0.0
+                    self.validate_launchpad_state()
                     return
             except Exception:
                 pass
@@ -273,6 +276,29 @@ class KRPCController:
             raise ValueError(
                 f"active vessel is {self.vessel.name!r}, expected {self.scenario.vessel_name!r}"
             )
+        self.vessel.control.throttle = 0.0
+        self.validate_launchpad_state()
+
+    def validate_launchpad_state(self) -> TelemetrySample:
+        """Fail clearly unless the benchmark vessel is ready for a fresh launch."""
+        sample = self.read_telemetry()
+        problems: list[str] = []
+        if sample.body != self.scenario.body:
+            problems.append(f"body is {sample.body!r}, expected {self.scenario.body!r}")
+        if sample.situation.lower() != "pre_launch":
+            problems.append(f"situation is {sample.situation!r}, expected 'pre_launch'")
+        if sample.mission_elapsed_s > 5.0:
+            problems.append(f"mission elapsed time is {sample.mission_elapsed_s:.1f}s")
+        if not sample.intact:
+            problems.append("vessel is not intact")
+        if not sample.controllable:
+            problems.append("vessel is not controllable")
+        throttle = _safe_float(lambda: self.vessel.control.throttle)
+        if throttle > 0.001:
+            problems.append(f"throttle is {throttle:.3f}, expected 0")
+        if problems:
+            raise RuntimeError("launchpad preflight failed: " + "; ".join(problems))
+        return sample
 
     def close(self) -> None:
         close = getattr(self.conn, "close", None)
@@ -318,6 +344,12 @@ def _set_unpaused(space_center: Any) -> None:
         space_center.paused = False
     elif hasattr(space_center, "game_paused"):
         space_center.game_paused = False
+
+
+def _set_no_time_warp(space_center: Any) -> None:
+    for name in ("rails_warp_factor", "physics_warp_factor"):
+        if hasattr(space_center, name):
+            setattr(space_center, name, 0)
 
 
 def _config_int(name: str, default: int, config: dict[str, str]) -> int:

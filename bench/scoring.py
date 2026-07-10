@@ -34,6 +34,8 @@ def score_trace(
     invalid_actions: int = 0,
     action_count: int = 0,
     wall_clock_elapsed_s: float | None = None,
+    valid_run: bool = True,
+    invalid_reason: str | None = None,
 ) -> ScoreResult:
     if not telemetry:
         return _empty_result(
@@ -44,6 +46,8 @@ def score_trace(
             invalid_actions,
             action_count,
             wall_clock_elapsed_s,
+            valid_run,
+            invalid_reason,
         )
 
     final = telemetry[-1]
@@ -103,7 +107,10 @@ def score_trace(
         "action_count": action_count,
         "intact": final.intact,
         "controllable": final.controllable,
+        "valid_run": valid_run,
     }
+    if invalid_reason:
+        diagnostics["invalid_reason"] = invalid_reason
 
     return ScoreResult(
         run_id=run_id,
@@ -128,6 +135,8 @@ def _empty_result(
     invalid_actions: int,
     action_count: int,
     wall_clock_elapsed_s: float | None,
+    valid_run: bool,
+    invalid_reason: str | None,
 ) -> ScoreResult:
     return ScoreResult(
         run_id=run_id,
@@ -172,6 +181,8 @@ def _empty_result(
             "action_count": action_count,
             "intact": False,
             "controllable": False,
+            "valid_run": valid_run,
+            **({"invalid_reason": invalid_reason} if invalid_reason else {}),
         },
     )
 
@@ -192,7 +203,14 @@ def _orbit_precision_points(scenario: Scenario, orbit_error_m: float) -> float:
 
 
 def _is_stable_orbit(scenario: Scenario, final: TelemetrySample) -> bool:
-    return final.periapsis_m >= scenario.target_orbit.stable_periapsis_min_m
+    return (
+        final.body == scenario.body
+        and final.situation.lower() == "orbiting"
+        and final.intact
+        and final.controllable
+        and final.apoapsis_m > 0
+        and final.periapsis_m >= scenario.target_orbit.stable_periapsis_min_m
+    )
 
 
 def _orbit_error_m(scenario: Scenario, final: TelemetrySample) -> float:
