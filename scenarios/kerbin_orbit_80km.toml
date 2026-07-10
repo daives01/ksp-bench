@@ -1,9 +1,7 @@
 instance_id = "kerbin_orbit_80km_fixed_rocket_v0"
-benchmark_version = "0.0.3"
+benchmark_version = "0.0.4"
 body = "Kerbin"
 vessel_name = "Kerbal 1"
-timeout_s = 600
-
 [target_orbit]
 altitude_m = 80000
 stable_periapsis_min_m = 70000

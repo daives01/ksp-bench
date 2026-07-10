@@ -36,7 +36,7 @@ class Scenario:
     benchmark_version: str
     body: str
     vessel_name: str | None
-    timeout_s: float
+    timeout_s: float | None
     target_orbit: TargetOrbit
     scoring: ScoringConfig
     source_path: Path | None = None
@@ -47,7 +47,6 @@ class Scenario:
             "instance_id",
             "benchmark_version",
             "body",
-            "timeout_s",
             "target_orbit",
             "scoring",
         ]
@@ -64,7 +63,11 @@ class Scenario:
             benchmark_version=_expect_str(data["benchmark_version"], "benchmark_version"),
             body=_expect_str(data["body"], "body"),
             vessel_name=_expect_optional_str(data.get("vessel_name"), "vessel_name"),
-            timeout_s=_expect_positive_number(data["timeout_s"], "timeout_s"),
+            timeout_s=(
+                _expect_positive_number(data["timeout_s"], "timeout_s")
+                if "timeout_s" in data
+                else None
+            ),
             target_orbit=TargetOrbit(
                 altitude_m=_expect_number(target["altitude_m"], "target_orbit.altitude_m"),
                 stable_periapsis_min_m=_expect_number(

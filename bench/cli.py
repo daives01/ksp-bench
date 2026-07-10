@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bench import __version__
@@ -28,8 +29,10 @@ from bench.krpc_client import (
     check_krpc_reachable,
 )
 from bench.public_results import publish_run
+from bench.recording import TelemetryRecorder
 from bench.scoring import score_trace
 from bench.telemetry import TelemetrySample
+from bench.termination import unrecoverable_no_propulsion_reason
 from bench.usage import collect_opencode_session_usage
 
 RUNS_DIR = Path("runs")
@@ -167,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds between telemetry samples during sleep/wait helpers",
     )
     run.add_argument(
+        "--telemetry-interval",
+        type=float,
+        default=5.0,
+        help="wall-clock seconds between independent telemetry samples",
+    )
+    run.add_argument(
         "--telemetry-waypoint-interval",
         type=float,
         default=10.0,
@@ -248,6 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="seconds between telemetry samples during sleep/wait helpers",
+    )
+    batch.add_argument(
+        "--telemetry-interval",
+        type=float,
+        default=5.0,
+        help="wall-clock seconds between independent telemetry samples",
     )
     batch.add_argument(
         "--telemetry-waypoint-interval",
@@ -365,8 +380,13 @@ def _agent(args: argparse.Namespace) -> int:
         },
     )
     telemetry = _read_telemetry_artifact(artifacts.run_dir)
-    if not _has_run_terminated(artifacts.run_dir):
-        _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    _capture_final_state(
+        artifacts,
+        scenario,
+        telemetry,
+        append_telemetry=not _has_run_terminated(artifacts.run_dir),
+    )
+    telemetry.sort(key=lambda sample: sample.mission_elapsed_s)
     artifacts.write_telemetry(telemetry)
     artifacts.write_telemetry_waypoints(telemetry)
     artifacts.append_event({"type": "agent_finished", "exit_code": completed.returncode})
@@ -399,11 +419,23 @@ def _run(args: argparse.Namespace) -> int:
         max_wait_s=args.max_sleep,
         poll_interval_s=args.poll_interval,
         telemetry_waypoint_interval_s=args.telemetry_waypoint_interval,
+        telemetry_interval_s=args.telemetry_interval,
         agent_timeout_s=args.agent_timeout or scenario.timeout_s,
         opencode_permissions="agent_scoped_virtual_bash_no_edits",
         opencode_agent="ksp",
     )
     artifacts.append_event({"type": "run_started", "mode": "opencode"})
+    recorder = TelemetryRecorder(
+        artifacts=artifacts,
+        controller_factory=lambda: KRPCController.connect(scenario, strict_vessel=False),
+        interval_s=args.telemetry_interval,
+        terminal_reason=lambda sample, vehicle: unrecoverable_no_propulsion_reason(
+            sample,
+            vehicle,
+            stable_periapsis_min_m=scenario.target_orbit.stable_periapsis_min_m,
+        ),
+    )
+    recorder.start()
 
     exit_code = 0
     result: ExternalAgentResult | None = None
@@ -444,6 +476,7 @@ def _run(args: argparse.Namespace) -> int:
         print(f"OpenCode agent failed: {exc}")
         exit_code = 3
     wall_clock_elapsed_s = time.monotonic() - wall_clock_started
+    recorder.stop()
 
     if result is not None:
         usage = collect_opencode_session_usage(session_title)
@@ -475,13 +508,22 @@ def _run(args: argparse.Namespace) -> int:
         )
 
     telemetry = _read_telemetry_artifact(artifacts.run_dir)
-    if not _has_run_terminated(artifacts.run_dir):
-        _append_final_telemetry_sample(artifacts, scenario, telemetry)
+    terminated = _has_run_terminated(artifacts.run_dir)
+    _capture_final_state(
+        artifacts,
+        scenario,
+        telemetry,
+        append_telemetry=not terminated,
+    )
+    telemetry.sort(key=lambda sample: sample.mission_elapsed_s)
     actions = _read_jsonl(artifacts.run_dir / "action_log.jsonl")
-    invalid_actions = sum(
-        1
-        for action in actions
-        if not action.get("allowed", True) or action.get("ok") is False
+    action_diagnostics = _classify_actions(actions)
+    invalid_actions = action_diagnostics["tool_errors"]
+    run_diagnostics = _classify_run(
+        artifacts.run_dir,
+        result=result,
+        exit_code=exit_code,
+        action_diagnostics=action_diagnostics,
     )
 
     score = _finalize_run(
@@ -495,6 +537,7 @@ def _run(args: argparse.Namespace) -> int:
         exit_code=exit_code,
         telemetry_waypoint_interval=args.telemetry_waypoint_interval,
         wall_clock_elapsed_s=wall_clock_elapsed_s,
+        run_diagnostics=run_diagnostics,
     )
     print(f"Wrote run artifacts to {artifacts.run_dir}")
     print(f"score={score.score}")
@@ -535,6 +578,7 @@ def _batch(args: argparse.Namespace) -> int:
             max_sleep=args.max_sleep,
             poll_interval=args.poll_interval,
             telemetry_waypoint_interval=args.telemetry_waypoint_interval,
+            telemetry_interval=args.telemetry_interval,
             no_stream_agent=args.no_stream_agent,
         )
         exit_code = max(exit_code, _run(run_args))
@@ -616,6 +660,7 @@ def _finalize_run(
     exit_code: int,
     telemetry_waypoint_interval: float,
     wall_clock_elapsed_s: float | None = None,
+    run_diagnostics: dict[str, float | int | bool | str | None] | None = None,
 ):
     valid_run = exit_code == 0
     invalid_reason = None if valid_run else "agent_or_infrastructure_failure"
@@ -635,6 +680,7 @@ def _finalize_run(
         wall_clock_elapsed_s=wall_clock_elapsed_s,
         valid_run=valid_run,
         invalid_reason=invalid_reason,
+        run_diagnostics=run_diagnostics,
     )
     artifacts.write_score(score)
     artifacts.write_summary(score)
@@ -736,20 +782,45 @@ def _read_telemetry_artifact(run_dir: Path) -> list[TelemetrySample]:
     return _read_telemetry(csv_path) if csv_path.exists() else []
 
 
-def _append_final_telemetry_sample(
+def _capture_final_state(
     artifacts: RunArtifacts,
     scenario: Scenario,
     telemetry: list[TelemetrySample],
+    *,
+    append_telemetry: bool = True,
 ) -> None:
+    controller: KRPCController | None = None
     try:
-        controller = KRPCController.connect(scenario)
+        controller = KRPCController.connect(scenario, strict_vessel=False)
         sample = controller.read_telemetry()
-        controller.close()
+        vehicle = controller.read_vehicle_state()
     except Exception as exc:
-        artifacts.append_event({"type": "telemetry_read_failed", "error": str(exc)})
+        artifacts.write_json(
+            "final_state.json",
+            {
+                "captured_at": datetime.now(UTC).isoformat(),
+                "telemetry": telemetry[-1].to_dict() if telemetry else None,
+                "vehicle": None,
+                "capture_error": str(exc),
+            },
+        )
+        artifacts.append_event({"type": "final_state_capture_failed", "error": str(exc)})
         return
-    telemetry.append(sample)
-    artifacts.append_telemetry_sample(sample)
+    finally:
+        if controller is not None:
+            controller.close()
+    artifacts.write_json(
+        "final_state.json",
+        {
+            "captured_at": datetime.now(UTC).isoformat(),
+            "telemetry": sample.to_dict(),
+            "vehicle": vehicle,
+            "capture_error": None,
+        },
+    )
+    if append_telemetry:
+        telemetry.append(sample)
+        artifacts.append_telemetry_sample(sample)
 
 
 def _has_run_terminated(run_dir: Path) -> bool:
@@ -760,6 +831,54 @@ def _has_run_terminated(run_dir: Path) -> bool:
         event.get("type") == "run_terminated"
         for event in _read_jsonl(events_path)
     )
+
+
+def _classify_actions(actions: list[dict[str, object]]) -> dict[str, int]:
+    failures = [action for action in actions if action.get("ok") is False]
+    flight_termination_errors = sum(
+        action.get("error_type") == "FlightTerminated" for action in failures
+    )
+    policy_violations = sum(
+        action.get("error_type") == "FlightToolError" for action in failures
+    )
+    return {
+        "tool_errors": len(failures),
+        "recoverable_tool_errors": len(failures) - flight_termination_errors,
+        "policy_violations": policy_violations,
+        "flight_termination_errors": flight_termination_errors,
+    }
+
+
+def _classify_run(
+    run_dir: Path,
+    *,
+    result: ExternalAgentResult | None,
+    exit_code: int,
+    action_diagnostics: dict[str, int],
+) -> dict[str, float | int | bool | str | None]:
+    events = _read_jsonl(run_dir / "events.jsonl")
+    termination = next(
+        (event for event in reversed(events) if event.get("type") == "run_terminated"),
+        None,
+    )
+    if termination is not None:
+        outcome = "flight_terminated"
+        failure_category: str | None = "flight_failure"
+    elif result is not None and result.timed_out:
+        outcome = "agent_timeout"
+        failure_category = "agent_process_failure"
+    elif exit_code != 0:
+        outcome = "agent_process_failed"
+        failure_category = "agent_process_failure"
+    else:
+        outcome = "completed"
+        failure_category = None
+    return {
+        "outcome": outcome,
+        "failure_category": failure_category,
+        "termination_reason": termination.get("reason") if termination else None,
+        **action_diagnostics,
+    }
 
 
 def _coerce_row(row: dict[str, str]) -> dict[str, object]:

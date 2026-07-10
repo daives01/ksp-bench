@@ -24,6 +24,7 @@ def publish_run(
     manifest = _read_json(run_dir / "manifest.json")
     agent_process = _read_json(run_dir / "agent_process.json")
     flight = _read_json(run_dir / "flight.json")
+    final_state = _read_json(run_dir / "final_state.json")
     agent = manifest.get("agent", {}) if isinstance(manifest.get("agent"), dict) else {}
     model = str(agent.get("model") or score.agent.get("model") or "unknown-model")
     thinking_level = agent.get("thinking_level") or score.agent.get("thinking_level")
@@ -55,6 +56,7 @@ def publish_run(
             "manifest": manifest,
             "score": score.to_dict(),
             "usage": agent_process.get("usage"),
+            "finalState": final_state or None,
             "flightUrl": candidate["flightUrl"],
         },
     )

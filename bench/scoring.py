@@ -18,7 +18,7 @@ class ScoreResult:
     fuel_remaining: dict[str, float]
     remaining_delta_v_m_s: float | None
     time: dict[str, float | None]
-    diagnostics: dict[str, float | int | bool | str]
+    diagnostics: dict[str, float | int | bool | str | None]
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -36,6 +36,7 @@ def score_trace(
     wall_clock_elapsed_s: float | None = None,
     valid_run: bool = True,
     invalid_reason: str | None = None,
+    run_diagnostics: dict[str, float | int | bool | str | None] | None = None,
 ) -> ScoreResult:
     if not telemetry:
         return _empty_result(
@@ -48,6 +49,7 @@ def score_trace(
             wall_clock_elapsed_s,
             valid_run,
             invalid_reason,
+            run_diagnostics,
         )
 
     final = telemetry[-1]
@@ -96,9 +98,9 @@ def score_trace(
         # wall-clock duration is the comparable benchmark-time measurement.
         "wall_clock_elapsed_s": _rounded_or_none(wall_clock_elapsed_s),
         "mission_elapsed_s": round(elapsed, 3),
-        "agent_timeout_s": round(scenario.timeout_s, 3),
+        "agent_timeout_s": _rounded_or_none(scenario.timeout_s),
     }
-    diagnostics: dict[str, float | int | bool | str] = {
+    diagnostics: dict[str, float | int | bool | str | None] = {
         "max_altitude_m": round(max_altitude, 3),
         "max_apoapsis_m": round(max_apoapsis, 3),
         "max_periapsis_m": round(max_periapsis, 3),
@@ -108,6 +110,7 @@ def score_trace(
         "intact": final.intact,
         "controllable": final.controllable,
         "valid_run": valid_run,
+        **(run_diagnostics or {}),
     }
     if invalid_reason:
         diagnostics["invalid_reason"] = invalid_reason
@@ -137,6 +140,7 @@ def _empty_result(
     wall_clock_elapsed_s: float | None,
     valid_run: bool,
     invalid_reason: str | None,
+    run_diagnostics: dict[str, float | int | bool | str | None] | None,
 ) -> ScoreResult:
     return ScoreResult(
         run_id=run_id,
@@ -167,7 +171,7 @@ def _empty_result(
         time={
             "wall_clock_elapsed_s": _rounded_or_none(wall_clock_elapsed_s),
             "mission_elapsed_s": 0.0,
-            "agent_timeout_s": round(scenario.timeout_s, 3),
+            "agent_timeout_s": _rounded_or_none(scenario.timeout_s),
         },
         diagnostics={
             "max_altitude_m": 0.0,
@@ -182,6 +186,7 @@ def _empty_result(
             "intact": False,
             "controllable": False,
             "valid_run": valid_run,
+            **(run_diagnostics or {}),
             **({"invalid_reason": invalid_reason} if invalid_reason else {}),
         },
     )

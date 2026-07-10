@@ -32,6 +32,7 @@ type RawFlight = {
   interval_s?: number;
   columns?: string[];
   points?: Array<Array<number | null>>;
+  events?: FlightTrace["events"];
 };
 
 const repoRoot = path.resolve(import.meta.dir, "../../..");
@@ -94,7 +95,7 @@ async function main() {
 
 function normalizeFlight(raw: RawFlight | null, legacy: TelemetrySample[]): FlightTrace {
   if (raw?.columns && raw.points) {
-    return { schemaVersion: raw.schema_version, intervalS: raw.interval_s, columns: raw.columns, points: raw.points };
+    return { schemaVersion: raw.schema_version, intervalS: raw.interval_s, columns: raw.columns, points: raw.points, events: raw.events };
   }
   return {
     schemaVersion: 0,

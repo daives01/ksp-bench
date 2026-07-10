@@ -95,6 +95,7 @@ Runs write:
 - `action_log.jsonl`
 - `telemetry.jsonl`
 - `flight.json`
+- `final_state.json` (final telemetry plus vehicle, engine, resource, stage, and control state)
 - `agent_process.json`
 - `score.json`
 - `summary.txt`

@@ -3,6 +3,7 @@ import { Filter, Search } from "lucide-react";
 import { formatCost, formatSeconds, modelLabel, runOutcome } from "@/lib/format";
 import { loadFlightTrace } from "@/lib/data";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { BenchmarkRun, FlightTrace } from "@/types";
 
@@ -74,7 +75,7 @@ export function ResultsView({ runs }: { runs: BenchmarkRun[] }) {
     <div className="unified-bench__layout">
       <section className="mission-panel leaderboard-panel">
         <div className="panel-head"><div className="leaderboard-heading"><h2>Leaderboard</h2><MetricControl value={metric} onChange={setMetric} /></div><ModelFilters runs={runs} selectedIds={selectedIds} setSelectedIds={setSelectedIds} open={filterOpen} setOpen={setFilterOpen} query={query} setQuery={setQuery} /></div>
-        <div className="leaderboard-list">
+        <ScrollArea className="leaderboard-list"><div className="leaderboard-list__content">
           {!rankedRuns.length ? <p className="leaderboard-empty">No models selected.</p> : null}
           {rankedRuns.map((run, index) => {
             const v = value(run, metric), bar = Number.isFinite(v) && v > 0 ? Math.min(100, Math.max(3, v / metricMax * 100)) : 0;
@@ -85,7 +86,7 @@ export function ResultsView({ runs }: { runs: BenchmarkRun[] }) {
               <span className="leaderboard-bar"><i style={{ width: `${bar}%`, background: colors[run.runId] }} /></span><strong className="leaderboard-value">{display(run, metric)}</strong>
             </button>;
           })}
-        </div>
+        </div></ScrollArea>
       </section>
       <section className="mission-panel flight-panel">
         <div className="panel-head"><h2>Altitude</h2><span className="target-label">80 km</span></div>
@@ -115,11 +116,11 @@ function ModelFilters({ runs, selectedIds, setSelectedIds, open, setOpen, query,
 function MetricControl({ value, onChange }: { value: Metric; onChange: (value: Metric) => void }) { return <Select value={value} onValueChange={(next: string) => onChange(next as Metric)}><SelectTrigger className="metric-control"><SelectValue /></SelectTrigger><SelectContent>{(Object.keys(metricMeta) as Metric[]).map((key) => <SelectItem key={key} value={key}>{metricMeta[key].label}</SelectItem>)}</SelectContent></Select>; }
 
 function AltitudeChart({ traces, activeId }: { traces: { run: BenchmarkRun; points: Point[]; color: string }[]; activeId: string | null }) {
-  const width = 960, height = 355, pad = { l: 62, r: 32, t: 18, b: 42 };
+  const width = 960, height = 600, pad = { l: 70, r: 32, t: 22, b: 66 };
   const maxTime = Math.max(...traces.flatMap(({ points }) => points.map((p) => p.t)), 1), maxAlt = Math.max(100000, ...traces.flatMap(({ points }) => points.map((p) => p.alt)));
   const x = (v: number) => pad.l + v / maxTime * (width - pad.l - pad.r), y = (v: number) => height - pad.b - Math.max(0, v) / maxAlt * (height - pad.t - pad.b);
   const path = (points: Point[]) => points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.alt).toFixed(1)}`).join(" ");
-  return <div className="altitude-chart"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="All flight altitudes over mission time"><text className="axis-title" transform={`translate(13 ${(pad.t+height-pad.b)/2}) rotate(-90)`} textAnchor="middle">Altitude · km</text>{[0, .25, .5, .75, 1].map((tick) => <g key={tick}><line className="chart-grid" x1={pad.l} x2={width-pad.r} y1={y(maxAlt*tick)} y2={y(maxAlt*tick)} /><text className="chart-tick" x={pad.l-8} y={y(maxAlt*tick)+3} textAnchor="end">{Math.round(maxAlt*tick/1000)}</text><text className="chart-tick" x={x(maxTime*tick)} y={height-10} textAnchor="middle">{formatSeconds(maxTime*tick)}</text></g>)}<text className="axis-title" x={(pad.l+width-pad.r)/2} y={height-1} textAnchor="middle">Mission time</text><line className="chart-target" x1={pad.l} x2={width-pad.r} y1={y(80000)} y2={y(80000)} />{traces.map(({run, points, color}, index) => <path key={run.runId} d={path(points)} stroke={color} className={`chart-line chart-line--draw ${activeId && activeId !== run.runId ? "is-dimmed" : ""} ${activeId === run.runId ? "is-focused" : ""}`} style={{ animationDelay: `${index * 90}ms` }} />)}</svg></div>;
+  return <div className="altitude-chart"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="All flight altitudes in kilometers over mission time"><text className="axis-title" transform={`translate(16 ${(pad.t+height-pad.b)/2}) rotate(-90)`} textAnchor="middle">Altitude (km)</text>{[0, .25, .5, .75, 1].map((tick) => <g key={tick}><line className="chart-grid" x1={pad.l} x2={width-pad.r} y1={y(maxAlt*tick)} y2={y(maxAlt*tick)} /><text className="chart-tick" x={pad.l-10} y={y(maxAlt*tick)+4} textAnchor="end">{Math.round(maxAlt*tick/1000)}</text><text className="chart-tick" x={x(maxTime*tick)} y={height-pad.b+24} textAnchor="middle">{formatSeconds(maxTime*tick)}</text></g>)}<text className="axis-title" x={(pad.l+width-pad.r)/2} y={height-8} textAnchor="middle">Mission time</text><line className="chart-target" x1={pad.l} x2={width-pad.r} y1={y(80000)} y2={y(80000)} />{traces.map(({run, points, color}, index) => <path key={run.runId} d={path(points)} stroke={color} className={`chart-line chart-line--draw ${activeId && activeId !== run.runId ? "is-dimmed" : ""} ${activeId === run.runId ? "is-focused" : ""}`} style={{ animationDelay: `${index * 90}ms` }} />)}</svg></div>;
 }
 
 function TradeoffGrid({ runs, colors, xMetric, yMetric, activeId, setActiveId, setXMetric, setYMetric }: { runs: BenchmarkRun[]; colors: Record<string, string>; xMetric: Metric; yMetric: Metric; activeId: string | null; setActiveId: (id: string | null) => void; setXMetric: (metric: Metric) => void; setYMetric: (metric: Metric) => void }) {

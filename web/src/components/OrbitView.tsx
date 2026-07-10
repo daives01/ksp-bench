@@ -6,6 +6,7 @@ import type { BenchmarkRun, FlightTrace } from "@/types";
 const COLORS = ["#95e6b8", "#5ac8fa", "#ff8d5c", "#d9a7ff", "#f7d154", "#ff86b9"];
 
 type Point = { t: number; alt: number };
+type FlightEvent = NonNullable<FlightTrace["events"]>[number];
 
 export function OrbitView({ runs }: { runs: BenchmarkRun[] }) {
   const [selectedId, setSelectedId] = useState(runs[0]?.runId);
@@ -29,7 +30,7 @@ export function OrbitView({ runs }: { runs: BenchmarkRun[] }) {
   }, [loadedTraces, selected]);
   const traces = useMemo(
     () => selected && selectedTrace
-      ? [{ run: selected, color: COLORS[0], points: pointsFor(selectedTrace) }]
+      ? [{ run: selected, color: COLORS[0], points: pointsFor(selectedTrace), events: selectedTrace.events ?? [] }]
       : [],
     [selected, selectedTrace],
   );
@@ -69,7 +70,7 @@ export function OrbitView({ runs }: { runs: BenchmarkRun[] }) {
   );
 }
 
-function AltitudeChart({ traces, selectedId }: { traces: { run: BenchmarkRun; color: string; points: Point[] }[]; selectedId: string | undefined }) {
+function AltitudeChart({ traces, selectedId }: { traces: { run: BenchmarkRun; color: string; points: Point[]; events: FlightEvent[] }[]; selectedId: string | undefined }) {
   const width = 960;
   const height = 400;
   const pad = { l: 58, r: 24, t: 20, b: 42 };
@@ -93,6 +94,19 @@ function AltitudeChart({ traces, selectedId }: { traces: { run: BenchmarkRun; co
         {traces.map(({ run, color, points }) => (
           <path key={run.runId} d={path(points)} stroke={color} className={`chart-line ${run.runId === selectedId ? "is-focused" : ""}`} />
         ))}
+        {traces.flatMap(({ run, color, events }) => events.map((event, index) => (
+          <circle
+            className={`chart-event ${event.ok ? "" : "is-error"}`}
+            cx={x(event.t)}
+            cy={y(event.alt)}
+            fill={color}
+            key={`${run.runId}-${event.t}-${event.type}-${index}`}
+            r={event.ok ? 4 : 5}
+            tabIndex={0}
+          >
+            <title>{`${formatSeconds(event.t)} · ${event.label}`}</title>
+          </circle>
+        )))}
       </svg>
     </div>
   );

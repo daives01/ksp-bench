@@ -27,7 +27,7 @@ export function formatDeltaV(value: number | null | undefined) {
 }
 
 export function modelLabel(model: string) {
-  return model.replace(/^opencode\//, "").replace(/^openai\//, "");
+  return model.replace(/^[^/]+\//, "");
 }
 
 export function runOutcome(run: {

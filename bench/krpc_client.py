@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
 from dataclasses import dataclass
@@ -10,6 +11,12 @@ from typing import Any
 
 from bench.config import Scenario
 from bench.telemetry import TelemetrySample
+
+_PROPELLANT_DENSITY_KG_PER_UNIT = {
+    "LiquidFuel": 5.0,
+    "Oxidizer": 5.0,
+    "SolidFuel": 7.5,
+}
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,9 @@ class KRPCController:
         vessel = self.vessel
         orbit = vessel.orbit
         body = orbit.body
+        # Use Kerbin's rotating frame for motion relative to the surface.
+        # vessel.surface_reference_frame follows the vessel itself, making
+        # speed and vertical_speed queried in that frame always read zero.
         flight = vessel.flight(body.reference_frame)
         surface_flight = vessel.flight(vessel.surface_reference_frame)
         resources = vessel.resources
@@ -112,9 +122,9 @@ class KRPCController:
             surface_altitude_m=float(flight.surface_altitude),
             apoapsis_m=float(orbit.apoapsis_altitude),
             periapsis_m=float(orbit.periapsis_altitude),
-            surface_speed_m_s=float(surface_flight.speed),
+            surface_speed_m_s=float(flight.speed),
             orbital_speed_m_s=float(orbit.speed),
-            vertical_speed_m_s=float(surface_flight.vertical_speed),
+            vertical_speed_m_s=float(flight.vertical_speed),
             pitch_deg=float(surface_flight.pitch),
             heading_deg=float(surface_flight.heading),
             roll_deg=float(surface_flight.roll),
@@ -131,7 +141,7 @@ class KRPCController:
             time_to_periapsis_s=_safe_float(lambda: orbit.time_to_periapsis),
             eccentricity=_safe_float(lambda: orbit.eccentricity),
             inclination_deg=_safe_float(lambda: orbit.inclination),
-            remaining_delta_v_m_s=_safe_float(lambda: vessel.available_delta_v),
+            remaining_delta_v_m_s=_estimate_remaining_delta_v(vessel),
             latitude_deg=_safe_float(lambda: flight.latitude),
             longitude_deg=_safe_float(lambda: flight.longitude),
         )
@@ -163,7 +173,9 @@ class KRPCController:
             "eccentricity": _safe_float(lambda: orbit.eccentricity),
             "inclination_deg": _safe_float(lambda: orbit.inclination),
             "orbital_speed_m_s": _safe_float(lambda: orbit.speed),
-            "vertical_speed_m_s": _safe_float(lambda: surface_flight.vertical_speed),
+            "vertical_speed_m_s": _safe_float(
+                lambda: vessel.flight(body.reference_frame).vertical_speed
+            ),
             "dynamic_pressure_pa": _safe_float(
                 lambda: getattr(surface_flight, "dynamic_pressure", 0.0)
             ),
@@ -311,6 +323,42 @@ def _resource_amount(resources: Any, name: str) -> float:
         return float(resources.amount(name))
     except Exception:
         return 0.0
+
+
+def _estimate_remaining_delta_v(vessel: Any) -> float | None:
+    """Estimate final-stage vacuum delta-v from live propellant and engine data."""
+    mass = _safe_float(lambda: vessel.mass, default=-1.0)
+    if mass <= 0:
+        return None
+
+    resources = vessel.resources
+    propellant_mass = sum(
+        _resource_amount(resources, name) * density
+        for name, density in _PROPELLANT_DENSITY_KG_PER_UNIT.items()
+    )
+    if propellant_mass <= 0:
+        return 0.0
+
+    engines = list(_safe_value(lambda: vessel.parts.engines, default=[]))
+    fueled = [engine for engine in engines if _safe_bool(lambda engine=engine: engine.has_fuel)]
+    # A full staged-vessel estimate requires reproducing KSP's staging
+    # simulation. Reserve scoring only needs the final fueled stage; return no
+    # estimate while multiple fueled engines/stages remain.
+    if len(fueled) != 1:
+        return None
+    active = [engine for engine in fueled if _safe_bool(lambda engine=engine: engine.active)]
+    candidates = active or fueled
+    vacuum_isp = max(
+        (
+            _safe_float(lambda engine=engine: engine.vacuum_specific_impulse, default=0.0)
+            for engine in candidates
+        ),
+        default=0.0,
+    )
+    burnout_mass = mass - propellant_mass
+    if vacuum_isp <= 0 or burnout_mass <= 0 or burnout_mass >= mass:
+        return None
+    return 9.80665 * vacuum_isp * math.log(mass / burnout_mass)
 
 
 def _enum_name(value: Any) -> str:

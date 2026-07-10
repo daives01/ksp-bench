@@ -29,7 +29,7 @@ export default function App() {
       <Button asChild variant="ghost" size="icon" className="header-link"><a href="https://github.com/daives01/ksp-bench" target="_blank" rel="noreferrer" aria-label="View source"><Github className="h-4 w-4" /></a></Button>
       <Button asChild variant="ghost" size="icon" className="header-link"><a href="https://buymeacoffee.com/danielives" target="_blank" rel="noreferrer" aria-label="Support Daniel Ives"><Heart className="h-4 w-4" /></a></Button>
     </div>}><p className="mission-label">KERBIN / 80 KM</p></Header>
-    <Routes><Route path="/80km" element={<main className="mx-auto w-full max-w-[78rem] px-4 pb-12 pt-7 sm:px-6 lg:px-8"><ResultsView runs={runs} /></main>} /><Route path="*" element={<Navigate to="/80km" replace />} /></Routes>
+    <Routes><Route path="/80km" element={<main className="mx-auto w-full max-w-[90rem] px-3 pb-12 pt-7 sm:px-4 lg:px-6"><ResultsView runs={runs} /></main>} /><Route path="*" element={<Navigate to="/80km" replace />} /></Routes>
     {isAboutOpen ? <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-4" role="presentation" onMouseDown={() => setIsAboutOpen(false)}>
       <section className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="about-benchmark-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-4">

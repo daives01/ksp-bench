@@ -9,7 +9,7 @@ type HeaderProps = {
 export function Header({ actions, children }: HeaderProps) {
   return (
     <header className="site-header">
-      <div className="mx-auto flex min-h-16 w-full max-w-[78rem] flex-col justify-center px-4 sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-16 w-full max-w-[90rem] flex-col justify-center px-3 sm:px-4 lg:px-6">
         <div className="flex items-center justify-between gap-4 py-3">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-3">

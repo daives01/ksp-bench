@@ -29,6 +29,7 @@ export async function loadFlightTrace(url: string): Promise<FlightTrace> {
     interval_s?: number;
     columns?: string[];
     points?: Array<Array<number | null>>;
+    events?: FlightTrace["events"];
   };
   if (!Array.isArray(flight.columns) || !Array.isArray(flight.points)) {
     throw new Error("flight data is invalid");
@@ -38,5 +39,6 @@ export async function loadFlightTrace(url: string): Promise<FlightTrace> {
     intervalS: flight.interval_s,
     columns: flight.columns,
     points: flight.points,
+    events: flight.events,
   };
 }

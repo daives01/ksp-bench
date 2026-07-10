@@ -109,6 +109,19 @@ def test_agent_process_stops_when_run_terminated_event_appears(tmp_path) -> None
     assert time.monotonic() - started < 5.0
 
 
+def test_agent_process_can_run_without_a_deadline(tmp_path) -> None:
+    result = _run_captured(
+        [sys.executable, "-c", "print('finished')"],
+        cwd=tmp_path,
+        timeout_s=None,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 0
+    assert result.timed_out is False
+    assert result.stdout == "finished\n"
+
+
 def test_prepare_opencode_workspace_copies_literal_krpc_sources(tmp_path) -> None:
     repo = tmp_path / "krpc"
     (repo / "client/python/krpc").mkdir(parents=True)

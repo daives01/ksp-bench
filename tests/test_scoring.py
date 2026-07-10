@@ -55,7 +55,7 @@ def test_scores_target_orbit() -> None:
     assert result.fuel_remaining["liquid_fuel"] == 10.0
     assert result.time["mission_elapsed_s"] == 300.0
     assert result.time["wall_clock_elapsed_s"] == 123.457
-    assert result.time["agent_timeout_s"] == 600.0
+    assert result.time["agent_timeout_s"] is None
     assert result.remaining_delta_v_m_s == 710.0
 
 

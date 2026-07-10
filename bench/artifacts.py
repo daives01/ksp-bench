@@ -92,11 +92,17 @@ class RunArtifacts:
         *,
         interval_s: float = 10.0,
     ) -> None:
-        waypoints = telemetry_waypoints(samples, interval_s=interval_s)
+        events = _flight_events(self.run_dir, samples)
+        event_times = [float(event["t"]) for event in events]
+        waypoints = telemetry_waypoints(
+            samples,
+            interval_s=interval_s,
+            event_times=event_times,
+        )
         self.write_json(
             "flight.json",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "interval_s": interval_s,
                 # Compact public/visualization trace.  Field names are kept in
                 # one place; individual points are positional tuples.
@@ -116,6 +122,7 @@ class RunArtifacts:
                     ]
                     for sample in waypoints
                 ],
+                "events": events,
             },
         )
 
@@ -177,6 +184,7 @@ def telemetry_waypoints(
     samples: list[TelemetrySample],
     *,
     interval_s: float = 10.0,
+    event_times: list[float] | None = None,
 ) -> list[TelemetrySample]:
     if interval_s <= 0:
         raise ValueError("interval_s must be positive")
@@ -196,4 +204,65 @@ def telemetry_waypoints(
                 next_met += interval_s
     if waypoints[-1] is not samples[-1]:
         waypoints.append(samples[-1])
-    return waypoints
+    if event_times:
+        waypoints.extend(_nearest_sample(samples, event_time) for event_time in event_times)
+    return sorted(set(waypoints), key=lambda sample: sample.mission_elapsed_s)
+
+
+def _flight_events(run_dir: Path, samples: list[TelemetrySample]) -> list[dict[str, Any]]:
+    path = run_dir / "action_log.jsonl"
+    if not path.exists() or not samples:
+        return []
+    actions = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    interesting = {
+        "set_throttle",
+        "stage",
+        "set_attitude",
+        "start_task",
+        "stop_task",
+    }
+    events: list[dict[str, Any]] = []
+    for action in actions:
+        action_type = str(action.get("type", "tool"))
+        if action_type not in interesting and action.get("ok") is not False:
+            continue
+        requested_time = float(action.get("mission_elapsed_s", 0.0) or 0.0)
+        sample = _nearest_sample(samples, requested_time)
+        events.append(
+            {
+                "t": round(sample.mission_elapsed_s, 2),
+                "alt": round(sample.altitude_m, 1),
+                "type": action_type,
+                "label": _action_label(action),
+                "ok": action.get("ok") is not False,
+            }
+        )
+    return events
+
+
+def _nearest_sample(samples: list[TelemetrySample], mission_elapsed_s: float) -> TelemetrySample:
+    return min(samples, key=lambda sample: abs(sample.mission_elapsed_s - mission_elapsed_s))
+
+
+def _action_label(action: dict[str, Any]) -> str:
+    action_type = str(action.get("type", "tool"))
+    if action.get("ok") is False:
+        return f"{action_type}: {action.get('error_type', 'error')}"
+    if action_type == "set_throttle":
+        return f"Throttle {float(action.get('throttle', 0.0)) * 100:.0f}%"
+    if action_type == "stage":
+        return "Stage"
+    if action_type == "set_attitude":
+        mode = str(action.get("mode", "attitude"))
+        if mode == "pitch_heading":
+            return f"Attitude pitch {action.get('pitch')}°, heading {action.get('heading')}°"
+        return f"Attitude {mode}"
+    if action_type == "start_task":
+        return "Control task started"
+    if action_type == "stop_task":
+        return "Control task stopped"
+    return action_type

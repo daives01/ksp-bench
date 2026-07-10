@@ -90,7 +90,7 @@ class OpenCodeAgentAdapter:
         self,
         *,
         scenario: Scenario,
-        timeout_s: float,
+        timeout_s: float | None,
         run_dir: Path | None = None,
         session_title: str | None = None,
         execution_timeout_s: float = 15.0,
@@ -342,7 +342,7 @@ def _run_streaming(
     command: list[str],
     *,
     cwd: Path,
-    timeout_s: float,
+    timeout_s: float | None,
     env: dict[str, str],
     run_dir: Path | None = None,
 ) -> ExternalAgentResult:
@@ -396,7 +396,7 @@ def _run_captured(
     command: list[str],
     *,
     cwd: Path,
-    timeout_s: float,
+    timeout_s: float | None,
     env: dict[str, str],
     run_dir: Path | None = None,
 ) -> ExternalAgentResult:
@@ -448,12 +448,14 @@ def _run_captured(
 def _wait_for_process(
     process: subprocess.Popen[str],
     *,
-    timeout_s: float,
+    timeout_s: float | None,
     run_dir: Path | None,
 ) -> tuple[int, bool, bool]:
     deadline = threading.Event()
-    timeout_timer = threading.Timer(timeout_s, deadline.set)
-    timeout_timer.start()
+    timeout_timer = None
+    if timeout_s is not None:
+        timeout_timer = threading.Timer(timeout_s, deadline.set)
+        timeout_timer.start()
     try:
         while process.poll() is None:
             if run_dir is not None and _run_was_terminated(run_dir):
@@ -465,7 +467,8 @@ def _wait_for_process(
             threading.Event().wait(0.1)
         return process.returncode or 0, False, False
     finally:
-        timeout_timer.cancel()
+        if timeout_timer is not None:
+            timeout_timer.cancel()
 
 
 def _stop_process(process: subprocess.Popen[str]) -> None:

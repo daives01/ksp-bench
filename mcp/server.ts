@@ -104,7 +104,7 @@ const tools: ToolDefinition[] = [
     {
         name: "attitude",
         description:
-            "Engage autopilot. Use mode=pitch_heading with pitch/heading, or hold prograde/retrograde/normal/anti_normal/radial/anti_radial in a reference frame.",
+            "Engage autopilot. Use mode=pitch_heading with pitch/heading (pitch 90 is straight up), or hold prograde/retrograde/normal/anti_normal/radial/anti_radial in a reference frame.",
         inputSchema: objectSchema(
             {
                 mode: {

@@ -56,6 +56,8 @@ def test_writes_score_and_summary(tmp_path: Path) -> None:
     assert (tmp_path / "run-1" / "telemetry.jsonl").exists()
     waypoints = json.loads((tmp_path / "run-1" / "flight.json").read_text(encoding="utf-8"))
     assert waypoints["interval_s"] == 10.0
+    assert waypoints["schema_version"] == 2
+    assert waypoints["events"] == []
     assert waypoints["columns"] == [
         "t", "alt", "apo", "peri", "lat", "lon", "speed", "stage", "fuel", "q"
     ]
@@ -93,3 +95,35 @@ def test_telemetry_waypoints_downsamples_by_mission_elapsed() -> None:
     waypoints = telemetry_waypoints(samples, interval_s=10.0)
 
     assert [sample.mission_elapsed_s for sample in waypoints] == [0.0, 10.0, 20.0, 29.0]
+
+
+def test_telemetry_waypoints_keep_event_aligned_samples() -> None:
+    samples = [
+        TelemetrySample(
+            mission_elapsed_s=float(met),
+            altitude_m=float(met),
+            surface_altitude_m=float(met),
+            apoapsis_m=10000.0,
+            periapsis_m=-500000.0,
+            surface_speed_m_s=100.0,
+            orbital_speed_m_s=200.0,
+            vertical_speed_m_s=50.0,
+            pitch_deg=80.0,
+            heading_deg=90.0,
+            roll_deg=0.0,
+            stage=0,
+            liquid_fuel=100.0,
+            oxidizer=100.0,
+            solid_fuel=0.0,
+            dynamic_pressure_pa=1000.0,
+            situation="flying",
+            body="Kerbin",
+            controllable=True,
+            intact=True,
+        )
+        for met in [0, 5, 10, 12, 20]
+    ]
+
+    waypoints = telemetry_waypoints(samples, interval_s=10.0, event_times=[12.0])
+
+    assert [sample.mission_elapsed_s for sample in waypoints] == [0.0, 10.0, 12.0, 20.0]

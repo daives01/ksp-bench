@@ -41,6 +41,7 @@ def test_run_command_exposes_simplified_timeout_flags() -> None:
     assert args.execution_timeout == 5
     assert args.task_timeout == 30
     assert args.max_sleep == 60
+    assert args.telemetry_interval == 5.0
     with pytest.raises(SystemExit):
         parser.parse_args(["run", "scenario.toml", "--warp-threshold", "10"])
 
@@ -111,6 +112,7 @@ def test_batch_resets_around_each_run(monkeypatch) -> None:
             max_sleep=240.0,
             poll_interval=0.5,
             telemetry_waypoint_interval=10.0,
+            telemetry_interval=5.0,
             no_stream_agent=False,
         )
     )

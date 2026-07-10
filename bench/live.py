@@ -16,6 +16,7 @@ from bench.artifacts import RunArtifacts
 from bench.config import Scenario
 from bench.krpc_client import KRPCController
 from bench.telemetry import TelemetrySample
+from bench.termination import unrecoverable_no_propulsion_reason
 
 
 class FlightToolError(RuntimeError):
@@ -625,35 +626,15 @@ class FlightSession:
         sample: TelemetrySample,
         controller: KRPCController,
     ) -> str | None:
-        if sample.mission_elapsed_s < 5.0:
-            return None
-        if sample.situation.lower() == "pre_launch":
-            return None
-        if sample.periapsis_m >= self.scenario.target_orbit.stable_periapsis_min_m:
-            return None
-        if _sample_propellant(sample) > 0.1:
-            return None
         try:
             vehicle = controller.read_vehicle_state()
         except Exception:
             return None
-        if float(vehicle.get("available_thrust", 0.0) or 0.0) > 0.1:
-            return None
-        engines = vehicle.get("engines") or []
-        decouplers = vehicle.get("decouplers") or []
-        next_stage = vehicle.get("next_stage")
-        if engines or decouplers:
-            return None
-        if next_stage and (
-            next_stage.get("engine_count")
-            or next_stage.get("decoupler_count")
-            or any(
-                float(value or 0.0) > 0.1
-                for value in (next_stage.get("resources") or {}).values()
-            )
-        ):
-            return None
-        return "mission_unrecoverable_no_propulsion"
+        return unrecoverable_no_propulsion_reason(
+            sample,
+            vehicle,
+            stable_periapsis_min_m=self.scenario.target_orbit.stable_periapsis_min_m,
+        )
 
     def _maybe_time_warp_to(self, target_met: float, *, controller: KRPCController) -> None:
         if self._in_atmosphere(controller) or not self.telemetry:
@@ -1032,6 +1013,13 @@ class FlightSession:
         }
 
     def _append_action(self, action: dict[str, Any]) -> None:
+        if not self.telemetry:
+            try:
+                with self._krpc_lock:
+                    self.record_telemetry(self.controller.read_telemetry())
+            except Exception:
+                pass
+        action["mission_elapsed_s"] = self._latest_mission_elapsed_s()
         action.setdefault("index", len(self.actions))
         action.setdefault("allowed", action.get("ok") is not False)
         self.actions.append(action)

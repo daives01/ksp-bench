@@ -33,6 +33,13 @@ export type FlightTrace = {
   intervalS?: number;
   columns: string[];
   points: Array<Array<number | null>>;
+  events?: Array<{
+    t: number;
+    alt: number;
+    type: string;
+    label: string;
+    ok: boolean;
+  }>;
 };
 
 export type BenchmarkRun = {
@@ -83,6 +90,13 @@ export type BenchmarkRun = {
     action_count: number;
     intact: boolean;
     controllable: boolean;
+    outcome?: string;
+    failure_category?: string | null;
+    termination_reason?: string | null;
+    tool_errors?: number;
+    recoverable_tool_errors?: number;
+    policy_violations?: number;
+    flight_termination_errors?: number;
   };
   usage?: {
     cost_usd: number | null;

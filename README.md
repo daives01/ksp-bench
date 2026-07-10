@@ -83,6 +83,14 @@ Each score records both `wall_clock_elapsed_s` (the elapsed benchmark-process ti
 time comparisons) and `mission_elapsed_s` (KSP MET used for flight replay). KSP MET can be
 accelerated by time warp, so it is not used to rank run duration.
 
+Benchmark agents have no wall-clock deadline by default. Runs stop when the agent exits or the
+flight harness detects an unrecoverable vessel state. Use `--agent-timeout` only when an explicit
+process deadline is desired; per-call and background-task safety timeouts remain in place.
+
+Raw telemetry is recorded independently of agent tool calls every five wall-clock seconds by
+default (`--telemetry-interval`). The compact public flight trace keeps regular mission-time
+waypoints plus event-aligned samples for throttle, staging, attitude, task, and tool-error markers.
+
 Queue multiple OpenCode models, reverting KSP to the unpaused launchpad state before
 and after each attempt:
 
