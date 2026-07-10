@@ -71,7 +71,7 @@ def score_trace(
         score += scenario.scoring.stable_orbit_points
         score += _orbit_precision_points(scenario, orbit_error_m)
         score += _reserve_delta_v_points(scenario, final)
-    score = max(0.0, min(100.0, round(score, 2)))
+    score = max(0.0, min(_maximum_score(scenario), round(score, 2)))
 
     final_orbit: dict[str, float | str] = {
         "body": final.body,
@@ -219,11 +219,32 @@ def _orbit_error_m(scenario: Scenario, final: TelemetrySample) -> float:
 
 
 def _reserve_delta_v_points(scenario: Scenario, final: TelemetrySample) -> float:
+    """Reward reserve delta-v, including an efficiency tier beyond manual baseline."""
     remaining = final.remaining_delta_v_m_s
     if remaining is None:
         return 0.0
-    return scenario.scoring.reserve_delta_v_points * min(
-        1.0, max(0.0, remaining) / scenario.scoring.manual_baseline_delta_v_m_s
+    remaining = max(0.0, remaining)
+    baseline = scenario.scoring.manual_baseline_delta_v_m_s
+    baseline_points = scenario.scoring.reserve_delta_v_points * min(1.0, remaining / baseline)
+    if remaining <= baseline:
+        return baseline_points
+
+    bonus_fraction = (remaining - baseline) / (
+        scenario.scoring.efficiency_bonus_delta_v_m_s - baseline
+    )
+    return baseline_points + scenario.scoring.efficiency_bonus_points * min(1.0, bonus_fraction)
+
+
+def _maximum_score(scenario: Scenario) -> float:
+    scoring = scenario.scoring
+    return (
+        scoring.cleared_tower_points
+        + scoring.reached_10km_points
+        + scoring.reached_space_points
+        + scoring.stable_orbit_points
+        + scoring.orbit_precision_points
+        + scoring.reserve_delta_v_points
+        + scoring.efficiency_bonus_points
     )
 
 

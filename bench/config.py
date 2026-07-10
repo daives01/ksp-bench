@@ -26,6 +26,8 @@ class ScoringConfig:
     orbit_precision_zero_credit_error_m: float
     reserve_delta_v_points: float
     manual_baseline_delta_v_m_s: float
+    efficiency_bonus_points: float
+    efficiency_bonus_delta_v_m_s: float
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,13 @@ class Scenario:
                 manual_baseline_delta_v_m_s=_expect_positive_number(
                     scoring["manual_baseline_delta_v_m_s"], "scoring.manual_baseline_delta_v_m_s"
                 ),
+                efficiency_bonus_points=_expect_number(
+                    scoring["efficiency_bonus_points"], "scoring.efficiency_bonus_points"
+                ),
+                efficiency_bonus_delta_v_m_s=_expect_positive_number(
+                    scoring["efficiency_bonus_delta_v_m_s"],
+                    "scoring.efficiency_bonus_delta_v_m_s",
+                ),
             ),
             source_path=source_path,
         )
@@ -120,6 +129,13 @@ class Scenario:
         ):
             raise ValueError(
                 "scoring.orbit_precision_zero_credit_error_m must exceed the tolerance"
+            )
+        if (
+            self.scoring.efficiency_bonus_delta_v_m_s
+            <= self.scoring.manual_baseline_delta_v_m_s
+        ):
+            raise ValueError(
+                "scoring.efficiency_bonus_delta_v_m_s must exceed the manual baseline"
             )
 
 

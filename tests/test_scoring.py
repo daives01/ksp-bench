@@ -59,6 +59,36 @@ def test_scores_target_orbit() -> None:
     assert result.remaining_delta_v_m_s == 710.0
 
 
+def test_efficiency_bonus_rewards_reserve_above_manual_baseline() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    baseline = score_trace(
+        run_id="baseline",
+        scenario=scenario,
+        telemetry=[_sample(periapsis_m=80000.0, remaining_delta_v_m_s=710.0)],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+    halfway = score_trace(
+        run_id="halfway",
+        scenario=scenario,
+        telemetry=[_sample(periapsis_m=80000.0, remaining_delta_v_m_s=855.0)],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+    maximum = score_trace(
+        run_id="maximum",
+        scenario=scenario,
+        telemetry=[_sample(periapsis_m=80000.0, remaining_delta_v_m_s=1200.0)],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+
+    assert baseline.score == 100.0
+    assert halfway.score == 110.0
+    assert maximum.score == 120.0
+
+
 def test_unstable_orbit_scores_lower() -> None:
     scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
 

@@ -29,3 +29,18 @@ export function formatDeltaV(value: number | null | undefined) {
 export function modelLabel(model: string) {
   return model.replace(/^opencode\//, "").replace(/^openai\//, "");
 }
+
+export function runOutcome(run: {
+  diagnostics: {
+    stable_orbit: boolean;
+    reached_space: boolean;
+    reached_10km: boolean;
+    cleared_tower: boolean;
+  };
+}) {
+  if (run.diagnostics.stable_orbit) return "Reached orbit";
+  if (run.diagnostics.reached_space) return "Suborbital flight";
+  if (run.diagnostics.reached_10km) return "Reached upper atmosphere";
+  if (run.diagnostics.cleared_tower) return "Cleared launch tower";
+  return "Did not leave launch pad";
+}

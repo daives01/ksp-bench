@@ -1,5 +1,5 @@
 instance_id = "kerbin_orbit_80km_fixed_rocket_v0"
-benchmark_version = "0.0.2"
+benchmark_version = "0.0.3"
 body = "Kerbin"
 vessel_name = "Kerbal 1"
 timeout_s = 600
@@ -24,3 +24,7 @@ orbit_precision_zero_credit_error_m = 20000
 reserve_delta_v_points = 20
 # A clean manual ascent leaves about 710 m/s in the fixed craft.
 manual_baseline_delta_v_m_s = 710
+# 100 is a clean manual-grade run. More efficient qualifying orbits earn up
+# to 20 bonus points, reaching the 120-point maximum at 1,000 m/s remaining.
+efficiency_bonus_points = 20
+efficiency_bonus_delta_v_m_s = 1000
