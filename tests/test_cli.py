@@ -12,7 +12,10 @@ from bench.cli import _batch, _has_run_terminated, _run, _run_artifacts_root, _s
 def test_only_opencode_execution_command_is_registered() -> None:
     parser = build_parser()
 
-    assert parser.parse_args(["run", "scenario.toml"]).scenario == "scenario.toml"
+    args = parser.parse_args(["run", "scenario.toml"])
+    assert args.scenario == "scenario.toml"
+    assert args.thinking_level == "low"
+    assert parser.parse_args(["agent"]).thinking_level == "low"
     with pytest.raises(SystemExit):
         parser.parse_args(["live", "scenario.toml"])
     with pytest.raises(SystemExit):

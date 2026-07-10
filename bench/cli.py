@@ -69,7 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument("scenario", nargs="?", default="scenarios/kerbin_orbit_80km.toml")
     agent.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
-    agent.add_argument("--thinking-level", help="model thinking level, for example high")
+    agent.add_argument(
+        "--thinking-level",
+        default="low",
+        help="OpenCode model variant (reasoning effort); defaults to low",
+    )
     agent.add_argument(
         "--executable",
         help="OpenCode executable path; defaults to opencode",
@@ -117,7 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("scenario")
     run.add_argument("--model", help="OpenCode model name, for example openai/gpt-5.4")
-    run.add_argument("--thinking-level", help="model thinking level, for example high")
+    run.add_argument(
+        "--thinking-level",
+        default="low",
+        help="OpenCode model variant (reasoning effort); defaults to low",
+    )
     run.add_argument(
         "--executable",
         help="OpenCode executable path; defaults to opencode",
@@ -182,7 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="OpenCode model name to run; repeat for multiple models",
     )
-    batch.add_argument("--thinking-level", help="model thinking level, for example high")
+    batch.add_argument(
+        "--thinking-level",
+        default="low",
+        help="OpenCode model variant (reasoning effort); defaults to low",
+    )
     batch.add_argument(
         "--models-file",
         help="TOML file with a models = [...] list",
@@ -321,6 +333,7 @@ def _agent(args: argparse.Namespace) -> int:
     command = [executable, str(PROJECT_ROOT), "--agent", "ksp", "--auto"]
     if args.model:
         command.extend(["--model", args.model])
+    command.extend(["--variant", args.thinking_level])
     if args.prompt:
         command.extend(["--prompt", args.prompt])
     command.extend(args.agent_arg)

@@ -70,7 +70,9 @@ class OpenCodeAgentAdapter:
         project_root: Path | None = None,
     ) -> None:
         self.model = model
-        self.thinking_level = thinking_level
+        # OpenCode calls a provider's reasoning setting a model "variant".
+        # Keep benchmark runs comparable even when callers omit the flag.
+        self.thinking_level = thinking_level or "low"
         self.executable = executable or "opencode"
         self.extra_args = extra_args or []
         self.project_root = project_root or PROJECT_ROOT
@@ -138,6 +140,7 @@ class OpenCodeAgentAdapter:
         ]
         if self.model:
             command.extend(["--model", self.model])
+        command.extend(["--variant", self.thinking_level])
         if session_title:
             command.extend(["--title", session_title])
         command.extend(self.extra_args)

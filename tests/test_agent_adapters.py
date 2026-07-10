@@ -39,7 +39,20 @@ def test_opencode_command_uses_project_ksp_agent(tmp_path) -> None:
     assert "--auto" in command
     assert "--format" in command
     assert "json" in command
+    assert command[command.index("--variant") + 1] == "low"
     assert command[-1] == "fly the rocket"
+
+
+def test_opencode_command_passes_requested_thinking_level_as_variant(tmp_path) -> None:
+    adapter = OpenCodeAgentAdapter(
+        model="openai/gpt-5.4",
+        thinking_level="high",
+        project_root=tmp_path,
+    )
+
+    command = adapter._command("fly the rocket")
+
+    assert command[command.index("--variant") + 1] == "high"
 
 
 def test_opencode_agent_metadata_includes_thinking_level() -> None:
