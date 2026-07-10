@@ -60,7 +60,7 @@ def score_trace(
         "cleared_tower": max_altitude >= scenario.scoring.cleared_tower_m,
         "reached_10km": max_altitude >= scenario.scoring.reached_10km_m,
         "reached_space": max_altitude >= scenario.scoring.reached_space_m,
-        "stable_orbit": _is_stable_orbit(scenario, final),
+        "stable_orbit": _is_qualifying_orbit(scenario, final),
     }
     orbit_error_m = _orbit_error_m(scenario, final)
     score = 0.0
@@ -202,7 +202,7 @@ def _orbit_precision_points(scenario: Scenario, orbit_error_m: float) -> float:
     return scenario.scoring.orbit_precision_points * max(0.0, fraction)
 
 
-def _is_stable_orbit(scenario: Scenario, final: TelemetrySample) -> bool:
+def _is_qualifying_orbit(scenario: Scenario, final: TelemetrySample) -> bool:
     return (
         final.body == scenario.body
         and final.situation.lower() == "orbiting"

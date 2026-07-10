@@ -630,6 +630,7 @@ def _finalize_run(
             "type": "run_finished",
             "score": score.score,
             "exit_code": exit_code,
+            "valid_run": valid_run,
         }
     )
     if not valid_run:

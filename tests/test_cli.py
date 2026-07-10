@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from bench.cli import _batch, _has_run_terminated, _run_artifacts_root, _score, build_parser
+from bench.cli import _batch, _has_run_terminated, _run, _run_artifacts_root, _score, build_parser
 
 
 def test_only_opencode_execution_command_is_registered() -> None:
@@ -40,6 +40,19 @@ def test_run_command_exposes_simplified_timeout_flags() -> None:
     assert args.max_sleep == 60
     with pytest.raises(SystemExit):
         parser.parse_args(["run", "scenario.toml", "--warp-threshold", "10"])
+
+
+def test_run_stops_before_starting_agent_when_preflight_fails(monkeypatch) -> None:
+    monkeypatch.setattr("bench.cli._preflight_launchpad", lambda _scenario: False)
+
+    def unexpected_adapter(**_kwargs):
+        raise AssertionError("agent adapter should not be created")
+
+    monkeypatch.setattr("bench.cli.OpenCodeAgentAdapter", unexpected_adapter)
+
+    exit_code = _run(argparse.Namespace(scenario="scenarios/kerbin_orbit_80km.toml"))
+
+    assert exit_code == 2
 
 
 def test_batch_command_accepts_repeated_models_and_model_file(tmp_path) -> None:

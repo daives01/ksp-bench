@@ -94,8 +94,7 @@ Runs write:
 
 - `action_log.jsonl`
 - `telemetry.jsonl`
-- `telemetry.csv`
-- `telemetry_waypoints.json`
+- `flight.json`
 - `agent_process.json`
 - `score.json`
 - `summary.txt`
