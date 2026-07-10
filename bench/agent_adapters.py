@@ -90,6 +90,7 @@ class OpenCodeAgentAdapter:
         scenario: Scenario,
         timeout_s: float,
         run_dir: Path | None = None,
+        session_title: str | None = None,
         execution_timeout_s: float = 15.0,
         task_timeout_s: float = 180.0,
         max_sleep_s: float = 240.0,
@@ -98,7 +99,7 @@ class OpenCodeAgentAdapter:
     ) -> ExternalAgentResult:
         prompt = build_agent_prompt(scenario=scenario)
         prepare_opencode_workspace(self.project_root)
-        command = self._command(prompt)
+        command = self._command(prompt, session_title=session_title)
         env = self._environment(
             scenario=scenario,
             run_dir=run_dir,
@@ -123,7 +124,7 @@ class OpenCodeAgentAdapter:
             run_dir=run_dir,
         )
 
-    def _command(self, prompt: str) -> list[str]:
+    def _command(self, prompt: str, *, session_title: str | None = None) -> list[str]:
         command = [
             self.executable,
             "run",
@@ -137,6 +138,8 @@ class OpenCodeAgentAdapter:
         ]
         if self.model:
             command.extend(["--model", self.model])
+        if session_title:
+            command.extend(["--title", session_title])
         command.extend(self.extra_args)
         command.append(prompt)
         return command

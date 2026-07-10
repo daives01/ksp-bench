@@ -1,5 +1,5 @@
 instance_id = "kerbin_orbit_80km_fixed_rocket_v0"
-benchmark_version = "0.0.1"
+benchmark_version = "0.0.2"
 body = "Kerbin"
 vessel_name = "Kerbal 1"
 timeout_s = 600
@@ -12,5 +12,15 @@ stable_periapsis_min_m = 70000
 cleared_tower_m = 100
 reached_10km_m = 10000
 reached_space_m = 70000
-target_orbit_points = 30
-fuel_bonus_points = 5
+cleared_tower_points = 2
+reached_10km_points = 6
+reached_space_points = 12
+stable_orbit_points = 30
+orbit_precision_points = 30
+# Full credit means both apses average within roughly a few hundred metres.
+# Precision then fades to zero at 20 km average orbit error.
+orbit_precision_tolerance_m = 300
+orbit_precision_zero_credit_error_m = 20000
+reserve_delta_v_points = 20
+# A clean manual ascent leaves about 710 m/s in the fixed craft.
+manual_baseline_delta_v_m_s = 710

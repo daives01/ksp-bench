@@ -17,8 +17,15 @@ class ScoringConfig:
     cleared_tower_m: float
     reached_10km_m: float
     reached_space_m: float
-    target_orbit_points: float
-    fuel_bonus_points: float
+    cleared_tower_points: float
+    reached_10km_points: float
+    reached_space_points: float
+    stable_orbit_points: float
+    orbit_precision_points: float
+    orbit_precision_tolerance_m: float
+    orbit_precision_zero_credit_error_m: float
+    reserve_delta_v_points: float
+    manual_baseline_delta_v_m_s: float
 
 
 @dataclass(frozen=True)
@@ -70,11 +77,33 @@ class Scenario:
                 reached_space_m=_expect_number(
                     scoring["reached_space_m"], "scoring.reached_space_m"
                 ),
-                target_orbit_points=_expect_number(
-                    scoring["target_orbit_points"], "scoring.target_orbit_points"
+                cleared_tower_points=_expect_number(
+                    scoring["cleared_tower_points"], "scoring.cleared_tower_points"
                 ),
-                fuel_bonus_points=_expect_number(
-                    scoring["fuel_bonus_points"], "scoring.fuel_bonus_points"
+                reached_10km_points=_expect_number(
+                    scoring["reached_10km_points"], "scoring.reached_10km_points"
+                ),
+                reached_space_points=_expect_number(
+                    scoring["reached_space_points"], "scoring.reached_space_points"
+                ),
+                stable_orbit_points=_expect_number(
+                    scoring["stable_orbit_points"], "scoring.stable_orbit_points"
+                ),
+                orbit_precision_points=_expect_number(
+                    scoring["orbit_precision_points"], "scoring.orbit_precision_points"
+                ),
+                orbit_precision_tolerance_m=_expect_positive_number(
+                    scoring["orbit_precision_tolerance_m"], "scoring.orbit_precision_tolerance_m"
+                ),
+                orbit_precision_zero_credit_error_m=_expect_positive_number(
+                    scoring["orbit_precision_zero_credit_error_m"],
+                    "scoring.orbit_precision_zero_credit_error_m",
+                ),
+                reserve_delta_v_points=_expect_number(
+                    scoring["reserve_delta_v_points"], "scoring.reserve_delta_v_points"
+                ),
+                manual_baseline_delta_v_m_s=_expect_positive_number(
+                    scoring["manual_baseline_delta_v_m_s"], "scoring.manual_baseline_delta_v_m_s"
                 ),
             ),
             source_path=source_path,
@@ -85,6 +114,13 @@ class Scenario:
             raise ValueError("target_orbit.altitude_m must be positive")
         if self.target_orbit.stable_periapsis_min_m <= 0:
             raise ValueError("target_orbit.stable_periapsis_min_m must be positive")
+        if (
+            self.scoring.orbit_precision_zero_credit_error_m
+            <= self.scoring.orbit_precision_tolerance_m
+        ):
+            raise ValueError(
+                "scoring.orbit_precision_zero_credit_error_m must exceed the tolerance"
+            )
 
 
 def load_scenario(path: str | Path) -> Scenario:

@@ -131,6 +131,7 @@ class KRPCController:
             time_to_periapsis_s=_safe_float(lambda: orbit.time_to_periapsis),
             eccentricity=_safe_float(lambda: orbit.eccentricity),
             inclination_deg=_safe_float(lambda: orbit.inclination),
+            remaining_delta_v_m_s=_safe_float(lambda: vessel.available_delta_v),
             latitude_deg=_safe_float(lambda: flight.latitude),
             longitude_deg=_safe_float(lambda: flight.longitude),
         )

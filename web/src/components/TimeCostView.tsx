@@ -6,8 +6,9 @@ type TimeCostViewProps = {
 };
 
 export function TimeView({ runs }: TimeCostViewProps) {
-  const rankedRuns = [...runs].sort((a, b) => a.time.mission_elapsed_s - b.time.mission_elapsed_s);
-  const maxTime = Math.max(...rankedRuns.map((run) => run.time.mission_elapsed_s), 1);
+  const elapsed = (run: BenchmarkRun) => run.time.wall_clock_elapsed_s ?? run.time.mission_elapsed_s;
+  const rankedRuns = [...runs].sort((a, b) => elapsed(a) - elapsed(b));
+  const maxTime = Math.max(...rankedRuns.map(elapsed), 1);
   const topColors = ["hsl(var(--safety-green))", "hsl(var(--electric-blue))", "hsl(var(--hazard-orange))"];
 
   return (
@@ -15,7 +16,7 @@ export function TimeView({ runs }: TimeCostViewProps) {
       <div className="mb-5">
         <h2 className="font-display text-2xl font-bold uppercase">Time</h2>
         <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
-          Mission elapsed time to stable orbit
+          Harness wall-clock time; legacy runs fall back to KSP MET
         </p>
       </div>
       <div className="space-y-px">
@@ -47,7 +48,7 @@ export function TimeView({ runs }: TimeCostViewProps) {
                     <div
                       className="bar-fill h-[6px] rounded-full"
                       style={{
-                        width: `${(run.time.mission_elapsed_s / maxTime) * 100}%`,
+                        width: `${(elapsed(run) / maxTime) * 100}%`,
                         backgroundColor: fillColor,
                         animationDelay: `${index * 35}ms`,
                         boxShadow: highlight ? `0 0 8px ${fillColor}` : undefined,
@@ -56,7 +57,7 @@ export function TimeView({ runs }: TimeCostViewProps) {
                   </div>
                 </div>
                 <span className={`w-16 shrink-0 text-right font-mono text-[13px] font-bold leading-none tabular-nums ${textColor}`}>
-                  {formatSeconds(run.time.mission_elapsed_s)}
+                  {formatSeconds(elapsed(run))}
                 </span>
               </div>
               {index === 2 ? <div className="mx-4 my-1.5 border-t border-dashed border-white/[0.06]" /> : null}
@@ -77,7 +78,10 @@ export function CostView({ runs }: TimeCostViewProps) {
   return (
     <section className="rounded-md border border-border bg-card/80 p-4">
       <div className="mb-5">
-        <h2 className="font-display text-2xl font-bold uppercase">Cost</h2>
+        <h2 className="font-display text-2xl font-bold uppercase">API-equivalent cost</h2>
+        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+          OpenAI or comparable OpenRouter list price — not subscription billing
+        </p>
       </div>
       <div className="space-y-3">
         {runs.map((run) => (
@@ -91,6 +95,10 @@ export function CostView({ runs }: TimeCostViewProps) {
                 {run.usage?.total_tokens == null
                   ? "tokens n/a"
                   : `${run.usage.total_tokens.toLocaleString()} tokens`}
+                {run.usage?.cached_input_tokens
+                  ? ` · ${run.usage.cached_input_tokens.toLocaleString()} cached`
+                  : ""}
+                {run.usage?.pricing_source ? ` · ${run.usage.pricing_source}` : ""}
               </div>
             </div>
             <div className="font-display text-xl font-bold">

@@ -16,7 +16,8 @@ class ScoreResult:
     score: float
     final_orbit: dict[str, float | str]
     fuel_remaining: dict[str, float]
-    time: dict[str, float]
+    remaining_delta_v_m_s: float | None
+    time: dict[str, float | None]
     diagnostics: dict[str, float | int | bool | str]
 
     def to_dict(self) -> dict[str, object]:
@@ -32,6 +33,7 @@ def score_trace(
     harness_version: str,
     invalid_actions: int = 0,
     action_count: int = 0,
+    wall_clock_elapsed_s: float | None = None,
 ) -> ScoreResult:
     if not telemetry:
         return _empty_result(
@@ -41,6 +43,7 @@ def score_trace(
             harness_version,
             invalid_actions,
             action_count,
+            wall_clock_elapsed_s,
         )
 
     final = telemetry[-1]
@@ -57,12 +60,13 @@ def score_trace(
     }
     orbit_error_m = _orbit_error_m(scenario, final)
     score = 0.0
-    score += 10.0 if milestones["cleared_tower"] else 0.0
-    score += 15.0 if milestones["reached_10km"] else 0.0
-    score += 20.0 if milestones["reached_space"] else 0.0
-    score += 20.0 if milestones["stable_orbit"] else 0.0
-    score += _orbit_quality_points(scenario, final)
-    score += _fuel_bonus(scenario, final)
+    score += scenario.scoring.cleared_tower_points if milestones["cleared_tower"] else 0.0
+    score += scenario.scoring.reached_10km_points if milestones["reached_10km"] else 0.0
+    score += scenario.scoring.reached_space_points if milestones["reached_space"] else 0.0
+    if milestones["stable_orbit"]:
+        score += scenario.scoring.stable_orbit_points
+        score += _orbit_precision_points(scenario, orbit_error_m)
+        score += _reserve_delta_v_points(scenario, final)
     score = max(0.0, min(100.0, round(score, 2)))
 
     final_orbit: dict[str, float | str] = {
@@ -84,8 +88,11 @@ def score_trace(
         "solid_fuel": round(final.solid_fuel, 3),
     }
     time_metrics = {
+        # KSP mission elapsed time can advance faster during rails warp. The
+        # wall-clock duration is the comparable benchmark-time measurement.
+        "wall_clock_elapsed_s": _rounded_or_none(wall_clock_elapsed_s),
         "mission_elapsed_s": round(elapsed, 3),
-        "timeout_s": round(scenario.timeout_s, 3),
+        "agent_timeout_s": round(scenario.timeout_s, 3),
     }
     diagnostics: dict[str, float | int | bool | str] = {
         "max_altitude_m": round(max_altitude, 3),
@@ -107,6 +114,7 @@ def score_trace(
         score=score,
         final_orbit=final_orbit,
         fuel_remaining=fuel_remaining,
+        remaining_delta_v_m_s=_rounded_or_none(final.remaining_delta_v_m_s),
         time=time_metrics,
         diagnostics=diagnostics,
     )
@@ -119,6 +127,7 @@ def _empty_result(
     harness_version: str,
     invalid_actions: int,
     action_count: int,
+    wall_clock_elapsed_s: float | None,
 ) -> ScoreResult:
     return ScoreResult(
         run_id=run_id,
@@ -145,9 +154,11 @@ def _empty_result(
             "oxidizer": 0.0,
             "solid_fuel": 0.0,
         },
+        remaining_delta_v_m_s=None,
         time={
+            "wall_clock_elapsed_s": _rounded_or_none(wall_clock_elapsed_s),
             "mission_elapsed_s": 0.0,
-            "timeout_s": round(scenario.timeout_s, 3),
+            "agent_timeout_s": round(scenario.timeout_s, 3),
         },
         diagnostics={
             "max_altitude_m": 0.0,
@@ -165,17 +176,19 @@ def _empty_result(
     )
 
 
-def _orbit_quality_points(scenario: Scenario, final: TelemetrySample) -> float:
-    target = scenario.target_orbit.altitude_m
-    apo_fraction = _altitude_quality_fraction(final.apoapsis_m, target)
-    peri_fraction = _altitude_quality_fraction(final.periapsis_m, target)
-    return scenario.scoring.target_orbit_points * ((apo_fraction + peri_fraction) / 2.0)
+def _orbit_precision_points(scenario: Scenario, orbit_error_m: float) -> float:
+    """Award precision only after orbit is safely established.
 
-
-def _altitude_quality_fraction(altitude_m: float, target_m: float) -> float:
-    if altitude_m < 0:
-        return 0.0
-    return max(0.0, 1.0 - (abs(altitude_m - target_m) / target_m))
+    The first 300 m of average apsis error is treated as manual-grade.  From
+    there the credit declines linearly to zero at 20 km, keeping near-misses
+    distinguishable without letting a loose orbit rival a precise one.
+    """
+    tolerance = scenario.scoring.orbit_precision_tolerance_m
+    zero_credit = scenario.scoring.orbit_precision_zero_credit_error_m
+    if orbit_error_m <= tolerance:
+        return scenario.scoring.orbit_precision_points
+    fraction = 1.0 - ((orbit_error_m - tolerance) / (zero_credit - tolerance))
+    return scenario.scoring.orbit_precision_points * max(0.0, fraction)
 
 
 def _is_stable_orbit(scenario: Scenario, final: TelemetrySample) -> bool:
@@ -187,7 +200,14 @@ def _orbit_error_m(scenario: Scenario, final: TelemetrySample) -> float:
     return (abs(final.apoapsis_m - target) + abs(final.periapsis_m - target)) / 2.0
 
 
-def _fuel_bonus(scenario: Scenario, final: TelemetrySample) -> float:
-    remaining = max(0.0, final.liquid_fuel + final.oxidizer + final.solid_fuel)
-    return min(scenario.scoring.fuel_bonus_points, remaining / 100.0)
+def _reserve_delta_v_points(scenario: Scenario, final: TelemetrySample) -> float:
+    remaining = final.remaining_delta_v_m_s
+    if remaining is None:
+        return 0.0
+    return scenario.scoring.reserve_delta_v_points * min(
+        1.0, max(0.0, remaining) / scenario.scoring.manual_baseline_delta_v_m_s
+    )
 
+
+def _rounded_or_none(value: float | None) -> float | None:
+    return None if value is None else round(value, 3)

@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from pathlib import Path
+from typing import Any  # noqa: I001
+
+# Comparable API prices per 1M text tokens: input, cached input, output, and
+# the reference pricing label. OpenCode records a zero cost for subscription
+# and free-model usage, so these are intentionally never treated as invoices.
+# Reasoning tokens are billed at the output rate. Keep this table current when
+# a provider changes its public API pricing.
+API_EQUIVALENT_RATES: dict[tuple[str, str], tuple[float, float, float, str]] = {
+    ("openai", "gpt-5.5"): (5.00, 0.50, 30.00, "OpenAI standard API"),
+    ("openai", "gpt-5.4"): (2.50, 0.25, 15.00, "OpenAI standard API"),
+    ("openai", "gpt-5.4-mini"): (0.75, 0.075, 4.50, "OpenAI standard API"),
+    ("openai", "gpt-5.4-nano"): (0.20, 0.02, 1.25, "OpenAI standard API"),
+    ("openai", "gpt-5"): (1.25, 0.125, 10.00, "OpenAI standard API"),
+    # These free OpenCode aliases are mapped to the equivalent paid OpenRouter
+    # model, not priced as $0. They make like-for-like model comparisons useful.
+    ("opencode", "deepseek-v4-flash-free"): (
+        0.09,
+        0.018,
+        0.18,
+        "OpenRouter list price: deepseek/deepseek-v4-flash",
+    ),
+    ("opencode", "mimo-v2.5-free"): (
+        0.105,
+        0.028,
+        0.28,
+        "OpenRouter list price: xiaomi/mimo-v2.5",
+    ),
+    ("opencode", "nemotron-3-ultra-free"): (
+        0.50,
+        0.10,
+        2.20,
+        "OpenRouter list price: nvidia/nemotron-3-ultra-550b-a55b",
+    ),
+}
+
+
+def collect_opencode_session_usage(
+    session_title: str,
+    *,
+    data_dir: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Read a completed OpenCode session's exact local token counters.
+
+    OpenCode intentionally records a zero cost for subscription-backed runs.
+    This returns a separate API-equivalent estimate when the model has a known
+    standard API rate; it never treats that estimate as the user's invoice.
+    """
+
+    root = _opencode_data_dir(data_dir)
+    database = root / "opencode.db"
+    if not database.is_file():
+        return None
+
+    try:
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                """
+                SELECT id, model, tokens_input, tokens_output, tokens_reasoning,
+                       tokens_cache_read, tokens_cache_write
+                FROM session
+                WHERE title = ?
+                ORDER BY time_updated DESC
+                LIMIT 1
+                """,
+                (session_title,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+
+    if row is None:
+        return None
+
+    (
+        session_id,
+        raw_model,
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        cache_read,
+        cache_write,
+    ) = row
+    provider, model = _parse_model(raw_model)
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    reasoning_tokens = int(reasoning_tokens or 0)
+    cached_input_tokens = int(cache_read or 0)
+    cache_write_tokens = int(cache_write or 0)
+
+    # Cache writes are not discounted cached reads, so count them as standard
+    # input for OpenAI's pricing and expose them separately for future models.
+    billable_input_tokens = input_tokens + cache_write_tokens
+    total_tokens = (
+        input_tokens
+        + output_tokens
+        + reasoning_tokens
+        + cached_input_tokens
+        + cache_write_tokens
+    )
+    pricing = _api_equivalent_pricing(
+        provider=provider,
+        model=model,
+        input_tokens=billable_input_tokens,
+        cached_input_tokens=cached_input_tokens,
+        output_tokens=output_tokens + reasoning_tokens,
+    )
+
+    return {
+        "source": "opencode_session",
+        "session_id": session_id,
+        "provider": provider,
+        "model": model,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": pricing[0] if pricing is not None else None,
+        "cost_kind": "api_equivalent" if pricing is not None else None,
+        "pricing_model": model if pricing is not None else None,
+        "pricing_source": pricing[1] if pricing is not None else None,
+    }
+
+
+def _opencode_data_dir(data_dir: str | Path | None) -> Path:
+    if data_dir is not None:
+        return Path(data_dir).expanduser()
+    configured = os.environ.get("OPENCODE_DATA_DIR")
+    if configured:
+        # OpenCode accepts multiple roots, but a benchmark invocation has one
+        # fresh session and the first configured root is the normal location.
+        return Path(configured.split(",", 1)[0]).expanduser()
+    return Path.home() / ".local" / "share" / "opencode"
+
+
+def _parse_model(raw_model: Any) -> tuple[str | None, str | None]:
+    if not isinstance(raw_model, str):
+        return None, None
+    try:
+        value = json.loads(raw_model)
+    except json.JSONDecodeError:
+        return None, raw_model
+    if not isinstance(value, dict):
+        return None, None
+    provider = value.get("providerID")
+    model = value.get("id")
+    return (
+        provider if isinstance(provider, str) else None,
+        model if isinstance(model, str) else None,
+    )
+
+
+def _api_equivalent_pricing(
+    *,
+    provider: str | None,
+    model: str | None,
+    input_tokens: int,
+    cached_input_tokens: int,
+    output_tokens: int,
+) -> tuple[float, str] | None:
+    if provider is None or model is None:
+        return None
+    rate = API_EQUIVALENT_RATES.get((provider, model))
+    if rate is None:
+        return None
+    input_rate, cached_input_rate, output_rate, pricing_source = rate
+    return (
+        input_tokens * input_rate
+        + cached_input_tokens * cached_input_rate
+        + output_tokens * output_rate
+    ) / 1_000_000, pricing_source

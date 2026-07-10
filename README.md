@@ -73,6 +73,16 @@ uv run kspbench run scenarios/kerbin_orbit_80km.toml \
   --model openai/gpt-5.4
 ```
 
+Each `run` records the OpenCode session's input, cached-input, output, and reasoning
+token counts in `agent_process.json`. For supported OpenAI models it also records a
+`cost_usd` API-equivalent estimate using standard API rates. Supported free OpenCode models
+use a comparable paid OpenRouter list price instead. This is a comparison metric, not the
+amount billed to a ChatGPT or OpenCode subscription.
+
+Each score records both `wall_clock_elapsed_s` (the elapsed benchmark-process time used for
+time comparisons) and `mission_elapsed_s` (KSP MET used for flight replay). KSP MET can be
+accelerated by time warp, so it is not used to rank run duration.
+
 Queue multiple OpenCode models, reverting KSP to the unpaused launchpad state before
 and after each attempt:
 

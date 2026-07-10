@@ -1,0 +1,270 @@
+{
+  "generatedAt": "2026-07-10T13:55:40.649235+00:00",
+  "runs": [
+    {
+      "adapter": "opencode_cli_ksp_agent",
+      "benchmarkVersion": "0.0.2",
+      "createdAt": "2026-07-10T13:38:47.321958+00:00",
+      "detailUrl": "/data/runs/20260710T133847Z_opencode_live_r1.json",
+      "diagnostics": {
+        "action_count": 30,
+        "cleared_tower": true,
+        "controllable": true,
+        "intact": true,
+        "invalid_actions": 4,
+        "max_altitude_m": 34166.281,
+        "max_apoapsis_m": 57881.136,
+        "max_periapsis_m": -269394.805,
+        "reached_10km": true,
+        "reached_space": false,
+        "stable_orbit": false
+      },
+      "finalOrbit": {
+        "apoapsis_m": 57881.136,
+        "body": "Kerbin",
+        "eccentricity": 0.331088,
+        "inclination_deg": 0.009,
+        "orbit_error_m": 185756.835,
+        "orbital_speed_m_s": 2080.994,
+        "periapsis_m": -269394.805,
+        "situation": "flying",
+        "target_altitude_m": 80000.0,
+        "time_to_apoapsis_s": 984.447,
+        "time_to_periapsis_s": 403.582
+      },
+      "flightUrl": "/data/flights/20260710T133847Z_opencode_live_r1.json",
+      "fuelRemaining": {
+        "liquid_fuel": 0.0,
+        "oxidizer": 0.0,
+        "solid_fuel": 0.0
+      },
+      "harnessVersion": "0.0.1",
+      "instanceId": "kerbin_orbit_80km_fixed_rocket_v0",
+      "model": "opencode/deepseek-v4-flash-free",
+      "remainingDeltaVMs": 0.0,
+      "runId": "20260710T133847Z_opencode_live_r1",
+      "score": 8.0,
+      "thinkingLevel": "low",
+      "time": {
+        "agent_timeout_s": 600.0,
+        "mission_elapsed_s": 228.64,
+        "wall_clock_elapsed_s": 299.075
+      },
+      "usage": {
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 950784,
+        "cost_kind": "api_equivalent",
+        "cost_usd": 0.023314751999999998,
+        "input_tokens": 45100,
+        "model": "deepseek-v4-flash-free",
+        "output_tokens": 4375,
+        "pricing_model": "deepseek-v4-flash-free",
+        "pricing_source": "OpenRouter list price: deepseek/deepseek-v4-flash",
+        "provider": "opencode",
+        "reasoning_tokens": 7523,
+        "session_id": "ses_0b3bf6dcdffeJyzX4EOFZNfKjK",
+        "source": "opencode_session",
+        "total_tokens": 1007782
+      }
+    },
+    {
+      "adapter": "opencode_cli_ksp_agent",
+      "benchmarkVersion": "0.0.2",
+      "createdAt": "2026-07-10T13:43:52.912978+00:00",
+      "detailUrl": "/data/runs/20260710T134352Z_opencode_live_r1.json",
+      "diagnostics": {
+        "action_count": 15,
+        "cleared_tower": true,
+        "controllable": true,
+        "intact": true,
+        "invalid_actions": 1,
+        "max_altitude_m": 3084.196,
+        "max_apoapsis_m": 3185.47,
+        "max_periapsis_m": -572144.583,
+        "reached_10km": false,
+        "reached_space": false,
+        "stable_orbit": false
+      },
+      "finalOrbit": {
+        "apoapsis_m": 2869.928,
+        "body": "Kerbin",
+        "eccentricity": 0.922013,
+        "inclination_deg": 0.036,
+        "orbit_error_m": 366334.064,
+        "orbital_speed_m_s": 716.154,
+        "periapsis_m": -575538.055,
+        "situation": "flying",
+        "target_altitude_m": 80000.0,
+        "time_to_apoapsis_s": 562.058,
+        "time_to_periapsis_s": 268.384
+      },
+      "flightUrl": "/data/flights/20260710T134352Z_opencode_live_r1.json",
+      "fuelRemaining": {
+        "liquid_fuel": 0.0,
+        "oxidizer": 0.0,
+        "solid_fuel": 0.0
+      },
+      "harnessVersion": "0.0.1",
+      "instanceId": "kerbin_orbit_80km_fixed_rocket_v0",
+      "model": "opencode/mimo-v2.5-free",
+      "remainingDeltaVMs": 0.0,
+      "runId": "20260710T134352Z_opencode_live_r1",
+      "score": 2.0,
+      "thinkingLevel": "low",
+      "time": {
+        "agent_timeout_s": 600.0,
+        "mission_elapsed_s": 75.02,
+        "wall_clock_elapsed_s": 100.904
+      },
+      "usage": {
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 114624,
+        "cost_kind": "api_equivalent",
+        "cost_usd": 0.0052734570000000005,
+        "input_tokens": 12489,
+        "model": "mimo-v2.5-free",
+        "output_tokens": 714,
+        "pricing_model": "mimo-v2.5-free",
+        "pricing_source": "OpenRouter list price: xiaomi/mimo-v2.5",
+        "provider": "opencode",
+        "reasoning_tokens": 1974,
+        "session_id": "ses_0b3bac4aeffeZYbog3Nyt63l2f",
+        "source": "opencode_session",
+        "total_tokens": 129801
+      }
+    },
+    {
+      "adapter": "opencode_cli_ksp_agent",
+      "benchmarkVersion": "0.0.2",
+      "createdAt": "2026-07-10T13:45:40.492317+00:00",
+      "detailUrl": "/data/runs/20260710T134540Z_opencode_live_r1.json",
+      "diagnostics": {
+        "action_count": 19,
+        "cleared_tower": true,
+        "controllable": true,
+        "intact": true,
+        "invalid_actions": 1,
+        "max_altitude_m": 9009.817,
+        "max_apoapsis_m": 9346.912,
+        "max_periapsis_m": -547593.032,
+        "reached_10km": false,
+        "reached_space": false,
+        "stable_orbit": false
+      },
+      "finalOrbit": {
+        "apoapsis_m": 4007.091,
+        "body": "Kerbin",
+        "eccentricity": 0.942433,
+        "inclination_deg": 0.08,
+        "orbit_error_m": 369036.131,
+        "orbital_speed_m_s": 643.792,
+        "periapsis_m": -582079.354,
+        "situation": "flying",
+        "target_altitude_m": 80000.0,
+        "time_to_apoapsis_s": 550.165,
+        "time_to_periapsis_s": 260.301
+      },
+      "flightUrl": "/data/flights/20260710T134540Z_opencode_live_r1.json",
+      "fuelRemaining": {
+        "liquid_fuel": 0.0,
+        "oxidizer": 0.0,
+        "solid_fuel": 0.0
+      },
+      "harnessVersion": "0.0.1",
+      "instanceId": "kerbin_orbit_80km_fixed_rocket_v0",
+      "model": "opencode/nemotron-3-ultra-free",
+      "remainingDeltaVMs": 0.0,
+      "runId": "20260710T134540Z_opencode_live_r1",
+      "score": 2.0,
+      "thinkingLevel": "low",
+      "time": {
+        "agent_timeout_s": 600.0,
+        "mission_elapsed_s": 125.26,
+        "wall_clock_elapsed_s": 139.128
+      },
+      "usage": {
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 134912,
+        "cost_kind": "api_equivalent",
+        "cost_usd": 0.0499015,
+        "input_tokens": 66335,
+        "model": "nemotron-3-ultra-free",
+        "output_tokens": 627,
+        "pricing_model": "nemotron-3-ultra-free",
+        "pricing_source": "OpenRouter list price: nvidia/nemotron-3-ultra-550b-a55b",
+        "provider": "opencode",
+        "reasoning_tokens": 847,
+        "session_id": "ses_0b3b92070ffeSYxz1hKk3eRzQH",
+        "source": "opencode_session",
+        "total_tokens": 202721
+      }
+    },
+    {
+      "adapter": "opencode_cli_ksp_agent",
+      "benchmarkVersion": "0.0.2",
+      "createdAt": "2026-07-10T13:48:06.163529+00:00",
+      "detailUrl": "/data/runs/20260710T134806Z_opencode_live_r1.json",
+      "diagnostics": {
+        "action_count": 45,
+        "cleared_tower": false,
+        "controllable": true,
+        "intact": true,
+        "invalid_actions": 37,
+        "max_altitude_m": 92.082,
+        "max_apoapsis_m": 94.12,
+        "max_periapsis_m": -598435.177,
+        "reached_10km": false,
+        "reached_space": false,
+        "stable_orbit": false
+      },
+      "finalOrbit": {
+        "apoapsis_m": 80.844,
+        "body": "Kerbin",
+        "eccentricity": 0.994917,
+        "inclination_deg": 0.008,
+        "orbit_error_m": 379185.44,
+        "orbital_speed_m_s": 173.962,
+        "periapsis_m": -598451.725,
+        "situation": "flying",
+        "target_altitude_m": 80000.0,
+        "time_to_apoapsis_s": 551.511,
+        "time_to_periapsis_s": 275.704
+      },
+      "flightUrl": "/data/flights/20260710T134806Z_opencode_live_r1.json",
+      "fuelRemaining": {
+        "liquid_fuel": 0.0,
+        "oxidizer": 0.0,
+        "solid_fuel": 0.0
+      },
+      "harnessVersion": "0.0.1",
+      "instanceId": "kerbin_orbit_80km_fixed_rocket_v0",
+      "model": "opencode/north-mini-code-free",
+      "remainingDeltaVMs": 0.0,
+      "runId": "20260710T134806Z_opencode_live_r1",
+      "score": 0.0,
+      "thinkingLevel": "low",
+      "time": {
+        "agent_timeout_s": 600.0,
+        "mission_elapsed_s": 71.44,
+        "wall_clock_elapsed_s": 454.438
+      },
+      "usage": {
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 0,
+        "cost_kind": null,
+        "cost_usd": null,
+        "input_tokens": 1574975,
+        "model": "north-mini-code-free",
+        "output_tokens": 9343,
+        "pricing_model": null,
+        "pricing_source": null,
+        "provider": "opencode",
+        "reasoning_tokens": 8184,
+        "session_id": "ses_0b3b6e760ffeZg8x1U6zwfbMo4",
+        "source": "opencode_session",
+        "total_tokens": 1592502
+      }
+    }
+  ],
+  "sourceRoot": "benchmark-runs"
+}

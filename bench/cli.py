@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -26,8 +27,10 @@ from bench.krpc_client import (
     check_krpc_package,
     check_krpc_reachable,
 )
+from bench.public_results import publish_run
 from bench.scoring import score_trace
 from bench.telemetry import TelemetrySample
+from bench.usage import collect_opencode_session_usage
 
 RUNS_DIR = Path("runs")
 
@@ -367,6 +370,7 @@ def _run(args: argparse.Namespace) -> int:
         extra_args=args.agent_arg,
     )
     run_id = args.run_id or default_run_id("opencode_live")
+    session_title = f"kspbench:{run_id}"
     artifacts = RunArtifacts.create(_run_artifacts_root(args.model, args.thinking_level), run_id)
     agent = adapter.agent_metadata
 
@@ -388,11 +392,13 @@ def _run(args: argparse.Namespace) -> int:
 
     exit_code = 0
     result: ExternalAgentResult | None = None
+    wall_clock_started = time.monotonic()
 
     try:
         result = adapter.run(
             scenario=scenario,
             run_dir=artifacts.run_dir,
+            session_title=session_title,
             timeout_s=args.agent_timeout or scenario.timeout_s,
             execution_timeout_s=args.execution_timeout,
             task_timeout_s=args.task_timeout,
@@ -422,8 +428,12 @@ def _run(args: argparse.Namespace) -> int:
         artifacts.append_event({"type": "run_failed", "reason": "agent_error", "detail": str(exc)})
         print(f"OpenCode agent failed: {exc}")
         exit_code = 3
+    wall_clock_elapsed_s = time.monotonic() - wall_clock_started
 
     if result is not None:
+        usage = collect_opencode_session_usage(session_title)
+        if usage is None:
+            usage = extract_usage(result.stdout, result.stderr)
         artifacts.write_json(
             "agent_process.json",
             {
@@ -433,7 +443,7 @@ def _run(args: argparse.Namespace) -> int:
                 "stderr": result.stderr,
                 "timed_out": result.timed_out,
                 "terminated": result.terminated,
-                "usage": extract_usage(result.stdout, result.stderr),
+                "usage": usage,
             },
         )
     else:
@@ -469,6 +479,7 @@ def _run(args: argparse.Namespace) -> int:
         action_count=len(actions),
         exit_code=exit_code,
         telemetry_waypoint_interval=args.telemetry_waypoint_interval,
+        wall_clock_elapsed_s=wall_clock_elapsed_s,
     )
     print(f"Wrote run artifacts to {artifacts.run_dir}")
     print(f"score={score.score}")
@@ -571,6 +582,7 @@ def _finalize_run(
     action_count: int,
     exit_code: int,
     telemetry_waypoint_interval: float,
+    wall_clock_elapsed_s: float | None = None,
 ):
     artifacts.write_telemetry(telemetry)
     artifacts.write_telemetry_waypoints(
@@ -585,6 +597,7 @@ def _finalize_run(
         harness_version=__version__,
         invalid_actions=invalid_actions,
         action_count=action_count,
+        wall_clock_elapsed_s=wall_clock_elapsed_s,
     )
     artifacts.write_score(score)
     artifacts.write_summary(score)
@@ -595,6 +608,10 @@ def _finalize_run(
             "exit_code": exit_code,
         }
     )
+    if publish_run(run_dir=artifacts.run_dir, score=score):
+        print(f"Published best result for {agent.get('model')}")
+    else:
+        print(f"Kept existing best result for {agent.get('model')}")
     return score
 
 

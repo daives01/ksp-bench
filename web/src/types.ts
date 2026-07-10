@@ -39,6 +39,7 @@ export type BenchmarkRun = {
   runId: string;
   createdAt?: string;
   model: string;
+  thinkingLevel?: string | null;
   adapter?: string;
   score: number;
   benchmarkVersion: string;
@@ -62,9 +63,13 @@ export type BenchmarkRun = {
     oxidizer: number;
     solid_fuel: number;
   };
+  remainingDeltaVMs?: number | null;
   time: {
+    /** Actual harness duration. Null means this is a legacy artifact. */
+    wall_clock_elapsed_s?: number | null;
+    /** KSP mission elapsed time; it may be accelerated by in-game warp. */
     mission_elapsed_s: number;
-    timeout_s: number;
+    agent_timeout_s?: number;
   };
   diagnostics: {
     max_altitude_m: number;
@@ -81,13 +86,21 @@ export type BenchmarkRun = {
   };
   usage?: {
     cost_usd: number | null;
+    cost_kind?: "api_equivalent" | "reported" | null;
+    pricing_model?: string | null;
+    pricing_source?: string | null;
     input_tokens: number | null;
+    cached_input_tokens?: number | null;
+    cache_write_tokens?: number | null;
     output_tokens: number | null;
+    reasoning_tokens?: number | null;
     total_tokens: number | null;
   };
+  flightUrl?: string;
+  detailUrl?: string;
   flight?: FlightTrace;
   /** Legacy public datasets. Normalized to `flight` while loading. */
-  telemetry: TelemetrySample[];
+  telemetry?: TelemetrySample[];
 };
 
 export type BenchmarkDataset = {

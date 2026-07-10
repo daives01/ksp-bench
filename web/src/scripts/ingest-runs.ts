@@ -15,6 +15,7 @@ type RawScore = {
   instance_id: string;
   run_id: string;
   score: number;
+  remaining_delta_v_m_s?: number | null;
   time: BenchmarkRun["time"];
 };
 
@@ -62,6 +63,7 @@ async function main() {
       instanceId: score.instance_id,
       finalOrbit: score.final_orbit,
       fuelRemaining: score.fuel_remaining,
+      remainingDeltaVMs: score.remaining_delta_v_m_s,
       time: score.time,
       diagnostics: score.diagnostics,
       usage: agentProcess?.usage,

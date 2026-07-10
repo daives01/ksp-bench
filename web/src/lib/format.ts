@@ -21,6 +21,11 @@ export function formatCost(value: number | null | undefined) {
   return `$${value.toFixed(2)}`;
 }
 
+export function formatDeltaV(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "not captured";
+  return `${Math.round(value)} m/s`;
+}
+
 export function modelLabel(model: string) {
   return model.replace(/^opencode\//, "").replace(/^openai\//, "");
 }

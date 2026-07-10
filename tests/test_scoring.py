@@ -40,16 +40,23 @@ def test_scores_target_orbit() -> None:
     result = score_trace(
         run_id="test",
         scenario=scenario,
-        telemetry=[_sample(altitude_m=1000.0), _sample()],
+        telemetry=[
+            _sample(altitude_m=1000.0),
+            _sample(periapsis_m=80000.0, remaining_delta_v_m_s=710.0),
+        ],
         agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
         harness_version="test",
+        wall_clock_elapsed_s=123.4567,
     )
 
-    assert result.score > 90
+    assert result.score == 100.0
     assert result.final_orbit["apoapsis_m"] == 80000.0
     assert result.final_orbit["target_altitude_m"] == 80000.0
     assert result.fuel_remaining["liquid_fuel"] == 10.0
     assert result.time["mission_elapsed_s"] == 300.0
+    assert result.time["wall_clock_elapsed_s"] == 123.457
+    assert result.time["agent_timeout_s"] == 600.0
+    assert result.remaining_delta_v_m_s == 710.0
 
 
 def test_unstable_orbit_scores_lower() -> None:
@@ -80,14 +87,29 @@ def test_stable_orbit_misses_target_but_keeps_partial_credit() -> None:
     result = score_trace(
         run_id="test",
         scenario=scenario,
-        telemetry=[_sample(apoapsis_m=120000.0, periapsis_m=90000.0)],
+        telemetry=[_sample(apoapsis_m=120000.0, periapsis_m=90000.0, remaining_delta_v_m_s=710.0)],
         agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
         harness_version="test",
     )
 
     assert result.diagnostics["stable_orbit"] is True
     assert result.final_orbit["orbit_error_m"] == 25000.0
-    assert result.score > 70
+    assert 50 < result.score < 80
+
+
+def test_missing_legacy_delta_v_does_not_receive_reserve_credit() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    result = score_trace(
+        run_id="test",
+        scenario=scenario,
+        telemetry=[_sample(periapsis_m=80000.0)],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+
+    assert result.score == 80.0
+    assert result.remaining_delta_v_m_s is None
 
 
 def test_invalid_actions_are_diagnostics_not_score_penalties() -> None:

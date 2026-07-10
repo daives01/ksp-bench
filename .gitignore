@@ -11,6 +11,7 @@ dist/
 
 # Local KSP artifacts and benchmark outputs
 runs/
+archives/
 logs/
 recordings/
 screenshots/
