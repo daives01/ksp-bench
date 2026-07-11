@@ -124,6 +124,23 @@ OpenCode starts the local MCP server with Bun via `opencode.json`:
 This keeps the benchmark centered on the simple question: can the model fly the vessel to orbit,
 while the harness records enough telemetry, actions, and artifacts to compare runs.
 
+## Benchmark versions
+
+The active benchmark version lives in the scenario file and is included in every score and
+public dataset. The website only compares runs whose version matches the dataset's active version.
+
+- Patch releases (`0.1.x`) are for changes that cannot materially affect performance or scoring,
+  such as copy, metadata, logging, website changes, and harmless harness corrections.
+- Minor releases (`0.x.0`) are required whenever scenario conditions, the vessel, agent
+  instructions, available tools, time limits, scoring, game/mod configuration, or harness behavior
+  could affect results. Start a fresh leaderboard and rerun the model field for that release.
+- Use `1.0.0` when the methodology is ready to be declared mature; it is not required for ordinary
+  stable benchmark operation.
+
+The deciding question is: would runs from before and after the change be fair on the same
+leaderboard? If not, bump the minor version. Keep prior public datasets under
+`web/public/data/archive/` rather than mixing them into the active leaderboard.
+
 Score or summarize existing run artifacts:
 
 ```bash

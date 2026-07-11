@@ -5,6 +5,7 @@ import type { BenchmarkDataset } from "@/types";
 const fallbackDataset: BenchmarkDataset = {
   generatedAt: "",
   sourceRoot: "fallback",
+  benchmarkVersion: "0.1.0",
   runs: [],
 };
 

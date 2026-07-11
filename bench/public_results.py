@@ -30,7 +30,7 @@ def publish_run(
     thinking_level = agent.get("thinking_level") or score.agent.get("thinking_level")
     candidate = _public_summary(score, manifest, agent_process.get("usage"), model, thinking_level)
     index_path = public_data_dir / "index.json"
-    index = _read_index(index_path)
+    index = _read_index(index_path, score.benchmark_version)
 
     matching_index = next(
         (position for position, existing in enumerate(index["runs"])
@@ -107,13 +107,19 @@ def _benchmark_key(run: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _read_index(path: Path) -> dict[str, Any]:
+def _read_index(path: Path, benchmark_version: str) -> dict[str, Any]:
     loaded = _read_json(path)
     runs = loaded.get("runs")
+    compatible_runs = (
+        [run for run in runs if run.get("benchmarkVersion") == benchmark_version]
+        if isinstance(runs, list)
+        else []
+    )
     return {
         "generatedAt": str(loaded.get("generatedAt", "")),
         "sourceRoot": "benchmark-runs",
-        "runs": runs if isinstance(runs, list) else [],
+        "benchmarkVersion": benchmark_version,
+        "runs": compatible_runs,
     }
 
 

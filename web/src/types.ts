@@ -120,5 +120,6 @@ export type BenchmarkRun = {
 export type BenchmarkDataset = {
   generatedAt: string;
   sourceRoot: string;
+  benchmarkVersion: string;
   runs: BenchmarkRun[];
 };

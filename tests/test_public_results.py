@@ -11,7 +11,7 @@ def _score(run_id: str, score: float) -> ScoreResult:
     return ScoreResult(
         run_id=run_id,
         instance_id="kerbin_orbit_80km_fixed_rocket_v0",
-        benchmark_version="0.0.2",
+        benchmark_version="0.1.0",
         harness_version="test",
         agent={
             "name": "ksp",
@@ -56,6 +56,7 @@ def test_publishes_only_the_best_model_and_thinking_level_run(tmp_path: Path) ->
     )
     index = json.loads((public_data_dir / "index.json").read_text(encoding="utf-8"))
     assert index["runs"][0]["runId"] == "first"
+    assert index["benchmarkVersion"] == "0.1.0"
     assert index["runs"][0]["flightUrl"] == "/data/flights/first.json"
     assert (public_data_dir / "runs" / "first.json").exists()
     assert (public_data_dir / "flights" / "first.json").exists()
@@ -88,3 +89,22 @@ def test_does_not_publish_invalid_run(tmp_path: Path) -> None:
 
     assert not publish_run(run_dir=run_dir, score=score, public_data_dir=public_data_dir)
     assert not (public_data_dir / "index.json").exists()
+
+
+def test_drops_results_from_an_older_benchmark_version(tmp_path: Path) -> None:
+    public_data_dir = tmp_path / "public-data"
+    public_data_dir.mkdir()
+    (public_data_dir / "index.json").write_text(
+        json.dumps({"benchmarkVersion": "0.0.4", "runs": [{"benchmarkVersion": "0.0.4"}]}),
+        encoding="utf-8",
+    )
+    run_dir = _run_dir(tmp_path, "current")
+
+    assert publish_run(
+        run_dir=run_dir,
+        score=_score("current", 50),
+        public_data_dir=public_data_dir,
+    )
+    index = json.loads((public_data_dir / "index.json").read_text(encoding="utf-8"))
+    assert index["benchmarkVersion"] == "0.1.0"
+    assert [run["runId"] for run in index["runs"]] == ["current"]

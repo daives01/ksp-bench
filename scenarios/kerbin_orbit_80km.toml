@@ -1,5 +1,5 @@
 instance_id = "kerbin_orbit_80km_fixed_rocket_v0"
-benchmark_version = "0.0.4"
+benchmark_version = "0.1.0"
 body = "Kerbin"
 vessel_name = "Kerbal 1"
 [target_orbit]

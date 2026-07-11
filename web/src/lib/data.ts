@@ -10,10 +10,10 @@ export async function loadBenchmarkData(): Promise<BenchmarkDataset> {
     }
     return {
       ...dataset,
-      runs: rankRuns(dataset.runs),
+      runs: rankRuns(dataset.runs.filter((run) => run.benchmarkVersion === dataset.benchmarkVersion)),
     };
   } catch {
-    return { generatedAt: "", sourceRoot: "", runs: [] };
+    return { generatedAt: "", sourceRoot: "", benchmarkVersion: "0.1.0", runs: [] };
   }
 }
 

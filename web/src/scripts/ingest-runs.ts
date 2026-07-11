@@ -38,6 +38,7 @@ type RawFlight = {
 const repoRoot = path.resolve(import.meta.dir, "../../..");
 const runsRoot = path.join(repoRoot, "runs");
 const outputPath = path.join(import.meta.dir, "../../public/data/benchmark.json");
+const activeBenchmarkVersion = "0.1.0";
 
 async function main() {
   const scorePaths = await findScoreFiles(runsRoot);
@@ -73,13 +74,16 @@ async function main() {
     });
   }
 
-  const bestRuns = bestRunByModel(runs);
+  const compatibleRuns = runs.filter((run) => run.benchmarkVersion === activeBenchmarkVersion);
+  const bestRuns = bestRunByModel(compatibleRuns);
   const existingDataset = await readJson<BenchmarkDataset>(outputPath);
-  const mergedRuns = mergeBestRuns(existingDataset?.runs ?? [], bestRuns);
+  const existingRuns = existingDataset?.benchmarkVersion === activeBenchmarkVersion ? existingDataset.runs : [];
+  const mergedRuns = mergeBestRuns(existingRuns, bestRuns);
 
   const dataset: BenchmarkDataset = {
     generatedAt: new Date().toISOString(),
     sourceRoot: path.relative(path.dirname(outputPath), runsRoot),
+    benchmarkVersion: activeBenchmarkVersion,
     runs: mergedRuns.sort(compareRuns),
   };
 
