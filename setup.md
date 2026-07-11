@@ -80,11 +80,13 @@ That direct path starts `mcp/server.ts` through Bun using [opencode.json](/Users
 If `KSPBENCH_RUN_DIR` is not set, the MCP server creates a run directory under
 `runs/`.
 
-The MCP server runs each foreground KSP tool in a fresh Python process with its
-own kRPC connection. `KSPBENCH_MCP_TOOL_TIMEOUT` controls the default hard
-timeout for those one-shot calls; duration-based tools such as `wait` add
-`KSPBENCH_MCP_TOOL_TIMEOUT_PADDING`. Each `start_task` call runs in its own
-supervised Python process; `KSPBENCH_TASK_TIMEOUT_PADDING`,
+The MCP server runs foreground KSP tools through one supervised persistent Python
+worker and reuses its kRPC connection. A timed-out foreground call kills that worker;
+the next call starts a fresh one. `KSPBENCH_MCP_TOOL_TIMEOUT` controls the default
+hard timeout, while `KSPBENCH_OBSERVE_TIMEOUT` controls the larger observation budget
+(15 seconds by default). Duration-based tools such as `wait` add
+`KSPBENCH_MCP_TOOL_TIMEOUT_PADDING`. Each `start_task` call still runs in its own
+independent supervised Python process; `KSPBENCH_TASK_TIMEOUT_PADDING`,
 `KSPBENCH_TASK_STOP_GRACE`, and `KSPBENCH_TASK_STATUS_INTERVAL` tune task
 supervision.
 

@@ -114,6 +114,117 @@ class KRPCController:
         return cls(conn, scenario, strict_vessel=strict_vessel)
 
     def read_telemetry(self) -> TelemetrySample:
+        try:
+            return self._read_telemetry_batched()
+        except Exception:
+            return self._read_telemetry_legacy()
+
+    def _read_telemetry_batched(self) -> TelemetrySample:
+        vessel = self.vessel
+        orbit, surface_frame, resources, control, situation, parts = _batch_rpc(
+            self.conn,
+            [
+                (getattr, vessel, "orbit"),
+                (getattr, vessel, "surface_reference_frame"),
+                (getattr, vessel, "resources"),
+                (getattr, vessel, "control"),
+                (getattr, vessel, "situation"),
+                (getattr, vessel, "parts"),
+            ],
+        )
+        body = _batch_rpc(self.conn, [(getattr, orbit, "body")])[0]
+        body_frame, body_name = _batch_rpc(
+            self.conn,
+            [(getattr, body, "reference_frame"), (getattr, body, "name")],
+        )
+        flight, surface_flight = _batch_rpc(
+            self.conn,
+            [(vessel.flight, body_frame), (vessel.flight, surface_frame)],
+        )
+        values = _batch_rpc(
+            self.conn,
+            [
+                (getattr, vessel, "met"),
+                (getattr, flight, "mean_altitude"),
+                (getattr, flight, "surface_altitude"),
+                (getattr, orbit, "apoapsis_altitude"),
+                (getattr, orbit, "periapsis_altitude"),
+                (getattr, flight, "speed"),
+                (getattr, orbit, "speed"),
+                (getattr, flight, "vertical_speed"),
+                (getattr, surface_flight, "pitch"),
+                (getattr, surface_flight, "heading"),
+                (getattr, surface_flight, "roll"),
+                (getattr, control, "current_stage"),
+                (resources.amount, "LiquidFuel"),
+                (resources.amount, "Oxidizer"),
+                (resources.amount, "SolidFuel"),
+                (getattr, surface_flight, "dynamic_pressure"),
+                (getattr, parts, "controlling"),
+                (getattr, orbit, "time_to_apoapsis"),
+                (getattr, orbit, "time_to_periapsis"),
+                (getattr, orbit, "eccentricity"),
+                (getattr, orbit, "inclination"),
+                (getattr, flight, "latitude"),
+                (getattr, flight, "longitude"),
+            ],
+        )
+        (
+            mission_elapsed,
+            altitude,
+            surface_altitude,
+            apoapsis,
+            periapsis,
+            surface_speed,
+            orbital_speed,
+            vertical_speed,
+            pitch,
+            heading,
+            roll,
+            stage,
+            liquid_fuel,
+            oxidizer,
+            solid_fuel,
+            dynamic_pressure,
+            controllable,
+            time_to_apoapsis,
+            time_to_periapsis,
+            eccentricity,
+            inclination,
+            latitude,
+            longitude,
+        ) = values
+        return TelemetrySample(
+            mission_elapsed_s=float(mission_elapsed),
+            altitude_m=float(altitude),
+            surface_altitude_m=float(surface_altitude),
+            apoapsis_m=float(apoapsis),
+            periapsis_m=float(periapsis),
+            surface_speed_m_s=float(surface_speed),
+            orbital_speed_m_s=float(orbital_speed),
+            vertical_speed_m_s=float(vertical_speed),
+            pitch_deg=float(pitch),
+            heading_deg=float(heading),
+            roll_deg=float(roll),
+            stage=int(stage),
+            liquid_fuel=float(liquid_fuel),
+            oxidizer=float(oxidizer),
+            solid_fuel=float(solid_fuel),
+            dynamic_pressure_pa=float(dynamic_pressure),
+            situation=_enum_name(situation),
+            body=str(body_name),
+            controllable=bool(controllable),
+            intact=_enum_name(situation).lower() not in {"crashed", "destroyed", "dead"},
+            time_to_apoapsis_s=float(time_to_apoapsis),
+            time_to_periapsis_s=float(time_to_periapsis),
+            eccentricity=float(eccentricity),
+            inclination_deg=float(inclination),
+            remaining_delta_v_m_s=_estimate_remaining_delta_v(vessel),
+            latitude_deg=float(latitude),
+            longitude_deg=float(longitude),
+        )
+
+    def _read_telemetry_legacy(self) -> TelemetrySample:
         vessel = self.vessel
         orbit = vessel.orbit
         body = orbit.body
@@ -331,6 +442,33 @@ def _resource_amount(resources: Any, name: str) -> float:
         return float(resources.amount(name))
     except Exception:
         return 0.0
+
+
+def _batch_rpc(conn: Any, specs: list[tuple[Any, ...]]) -> list[Any]:
+    """Execute several generated-client calls in one protobuf request."""
+    from krpc.decoder import Decoder  # type: ignore
+    from krpc.schema import KRPC_pb2 as KRPC  # type: ignore
+
+    calls = []
+    return_types = []
+    for func, *args in specs:
+        calls.append(conn.get_call(func, *args))
+        return_types.append(conn._get_return_type(func, *args))
+    request = KRPC.Request()
+    request.calls.extend(calls)
+    with conn._rpc_connection_lock:
+        conn._rpc_connection.send_message(request)
+        response = conn._rpc_connection.receive_message(KRPC.Response)
+    if response.HasField("error"):
+        raise conn._build_error(response.error)
+    if len(response.results) != len(return_types):
+        raise RuntimeError("kRPC batch response length did not match request")
+    decoded = []
+    for result, return_type in zip(response.results, return_types, strict=True):
+        if result.HasField("error"):
+            raise conn._build_error(result.error)
+        decoded.append(Decoder.decode(conn, result.value, return_type))
+    return decoded
 
 
 def _estimate_remaining_delta_v(vessel: Any) -> float | None:

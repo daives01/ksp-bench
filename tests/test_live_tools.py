@@ -435,6 +435,25 @@ def test_execute_python_is_escape_hatch_and_rejects_unsafe_import(tmp_path) -> N
     assert "launch_vessel_from_vab is not available" in launch["error"]
 
 
+def test_execute_python_allows_safe_introspection_without_dunder_access(tmp_path) -> None:
+    session = _session(tmp_path)
+
+    result = session.execute_python(
+        "result = {"
+        "'type': str(type(vessel)), "
+        "'throttle': getattr(vessel.control, 'throttle'), "
+        "'has_throttle': hasattr(vessel.control, 'throttle'), "
+        "'members': dir(vessel.control)}"
+    )
+    dunder = session.execute_python("result = vessel.__dict__")
+
+    assert result["ok"] is True
+    assert result["result"]["has_throttle"] is True
+    assert "throttle" in result["result"]["members"]
+    assert dunder["ok"] is False
+    assert dunder["error_type"] == "FlightToolError"
+
+
 def test_execute_python_timeout_points_agent_to_background_task(tmp_path) -> None:
     session = _session(tmp_path, max_sync_python_s=0.01)
 

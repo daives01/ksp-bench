@@ -626,6 +626,12 @@ class FlightSession:
         sample: TelemetrySample,
         controller: KRPCController,
     ) -> str | None:
+        if sample.mission_elapsed_s < 5.0 or sample.situation.lower() == "pre_launch":
+            return None
+        if sample.periapsis_m >= self.scenario.target_orbit.stable_periapsis_min_m:
+            return None
+        if _sample_propellant(sample) > 0.1:
+            return None
         try:
             vehicle = controller.read_vehicle_state()
         except Exception:
@@ -1127,18 +1133,22 @@ def _safe_builtins() -> dict[str, Any]:
         "enumerate": enumerate,
         "Exception": Exception,
         "float": float,
+        "getattr": getattr,
+        "hasattr": hasattr,
         "int": int,
         "len": len,
         "list": list,
         "max": max,
         "min": min,
         "print": print,
+        "dir": dir,
         "range": range,
         "round": round,
         "set": set,
         "str": str,
         "sum": sum,
         "tuple": tuple,
+        "type": type,
     }
 
 

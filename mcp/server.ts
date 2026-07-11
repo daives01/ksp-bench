@@ -22,6 +22,12 @@ type PythonEnvelope = {
     error?: { type?: string; message?: string };
 };
 
+type WorkerResponse = {
+    id: number | null;
+    result?: unknown;
+    error?: { type?: string; message?: string };
+};
+
 type ToolDefinition = {
     name: string;
     description: string;
@@ -153,9 +159,24 @@ const tools: ToolDefinition[] = [
         }),
     },
     {
+        name: "krpc_api",
+        description:
+            "Look up flight-relevant kRPC Python classes, members, signatures, and documentation. Use this before guessing an unfamiliar API name.",
+        inputSchema: objectSchema(
+            {
+                query: {
+                    type: "string",
+                    description:
+                        "Class/member keywords, for example 'Resources amount' or 'Engine thrust'.",
+                },
+            },
+            ["query"],
+        ),
+    },
+    {
         name: "execute_python",
         description:
-            "Run a kRPC Python snippet for APIs the structured tools do not cover. It must return quickly; use it only for small control snippets. Use start_task for longer-running control logic.",
+            "Run a kRPC Python snippet for APIs the structured tools do not cover. It must return quickly; use it only for small control snippets. Safe introspection with dir, type, hasattr, and getattr is available. Use start_task for longer-running control logic.",
         inputSchema: objectSchema(
             {
                 code: { type: "string", description: "Python code." },
@@ -233,6 +254,7 @@ const encoder = new TextEncoder();
 const tasks = new Map<string, TaskInfo>();
 let nextTaskID = 1;
 let generatedRunDir: string | undefined;
+let foregroundWorker: ForegroundWorker | undefined;
 
 class PythonProcessError extends Error {
     constructor(message: string) {
@@ -338,6 +360,8 @@ async function callTool(
     let result: unknown;
     if (name === "start_task") {
         result = startTask(args);
+    } else if (name === "krpc_api") {
+        result = lookupKrpcApi(requiredString(args, "query"));
     } else if (name === "check_task") {
         result = checkTask(optionalString(args.task_id));
     } else if (name === "stop_task") {
@@ -355,20 +379,163 @@ async function callTool(
     };
 }
 
+function lookupKrpcApi(query: string): Record<string, unknown> {
+    const indexPath = join(
+        process.cwd(),
+        ".opencode/ksp/krpc_reference/API_INDEX.json",
+    );
+    if (!existsSync(indexPath)) {
+        return {
+            ok: false,
+            error: "kRPC API index is unavailable; run prepare-agent",
+        };
+    }
+    const index = JSON.parse(readFileSync(indexPath, "utf-8")) as {
+        source?: string;
+        classes?: Record<
+            string,
+            {
+                summary?: string;
+                members?: Array<Record<string, string>>;
+            }
+        >;
+    };
+    const terms = query.toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
+    const matches: Array<Record<string, string | number>> = [];
+    const classes = Object.entries(index.classes ?? {});
+    const namedClasses = classes.filter(([className]) =>
+        terms.includes(className.toLowerCase()),
+    );
+    for (const [className, info] of namedClasses.length ? namedClasses : classes) {
+        const classText = `${className} ${info.summary ?? ""}`.toLowerCase();
+        const classScore = terms.filter((term) => classText.includes(term)).length;
+        for (const member of info.members ?? []) {
+            const text = `${className} ${member.name ?? ""} ${member.signature ?? ""} ${member.summary ?? ""}`.toLowerCase();
+            const score =
+                terms.filter((term) => text.includes(term)).length + classScore;
+            if (score > 0) {
+                matches.push({ class: className, ...member, score });
+            }
+        }
+    }
+    matches.sort(
+        (left, right) =>
+            Number(right.score) - Number(left.score) ||
+            String(left.class).localeCompare(String(right.class)),
+    );
+    return {
+        ok: true,
+        query,
+        source: index.source,
+        matches: matches.slice(0, 20),
+    };
+}
+
 async function callForegroundTool(
     name: string,
     args: Record<string, unknown>,
 ): Promise<unknown> {
-    const result = await runPythonJson(
-        "bench.ksp_call",
-        {
-            method: name,
-            params: args,
-            selected_vehicle: null,
-        },
-        toolTimeoutSeconds(name, args),
-    );
-    return result;
+    foregroundWorker ??= new ForegroundWorker();
+    try {
+        return await foregroundWorker.call(
+            name,
+            args,
+            toolTimeoutSeconds(name, args),
+        );
+    } catch (error) {
+        foregroundWorker.kill();
+        foregroundWorker = undefined;
+        throw error;
+    }
+}
+
+class ForegroundWorker {
+    private process = spawnPython("bench.ksp_worker");
+    private nextID = 1;
+    private pending = new Map<
+        number,
+        { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    >();
+    private buffer = "";
+
+    constructor() {
+        void this.readStdout();
+        void readStream(this.process.stderr).then((stderr) => {
+            if (stderr.trim()) process.stderr.write(stderr);
+        });
+        void this.process.exited.then((code) => {
+            this.rejectAll(new PythonProcessError(`KSP worker exited with code ${code}`));
+        });
+    }
+
+    call(method: string, params: Record<string, unknown>, timeoutS: number): Promise<unknown> {
+        const id = this.nextID++;
+        const response = new Promise<unknown>((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+        });
+        this.process.stdin.write(
+            JSON.stringify({ id, method, params, selected_vehicle: null }) + "\n",
+        );
+        let timeout: ReturnType<typeof setTimeout>;
+        const deadline = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+                this.pending.delete(id);
+                reject(
+                    new PythonProcessTimeout(
+                        `bench.ksp_worker timed out after ${timeoutS.toFixed(3)}s`,
+                    ),
+                );
+            }, timeoutS * 1000);
+        });
+        return Promise.race([response, deadline]).finally(() => clearTimeout(timeout));
+    }
+
+    kill(): void {
+        killProcess(this.process);
+    }
+
+    private async readStdout(): Promise<void> {
+        for await (const chunk of this.process.stdout) {
+            this.buffer += decoder.decode(chunk);
+            let newline = this.buffer.indexOf("\n");
+            while (newline >= 0) {
+                const line = this.buffer.slice(0, newline);
+                this.buffer = this.buffer.slice(newline + 1);
+                this.handleLine(line);
+                newline = this.buffer.indexOf("\n");
+            }
+        }
+    }
+
+    private handleLine(line: string): void {
+        if (!line.trim()) return;
+        const response = JSON.parse(line) as WorkerResponse;
+        if (response.id === null) {
+            this.rejectAll(
+                new PythonProcessError(
+                    `${response.error?.type ?? "PythonError"}: ${response.error?.message ?? ""}`,
+                ),
+            );
+            return;
+        }
+        const pending = this.pending.get(response.id);
+        if (!pending) return;
+        this.pending.delete(response.id);
+        if (response.error) {
+            pending.reject(
+                new PythonProcessError(
+                    `${response.error.type ?? "PythonError"}: ${response.error.message ?? ""}`,
+                ),
+            );
+        } else {
+            pending.resolve(response.result);
+        }
+    }
+
+    private rejectAll(error: Error): void {
+        for (const pending of this.pending.values()) pending.reject(error);
+        this.pending.clear();
+    }
 }
 
 function startTask(args: Record<string, unknown>): Record<string, unknown> {
@@ -690,6 +857,8 @@ function currentTaskStatus(statuses: TaskStatus[]): TaskStatus | null {
 }
 
 function shutdownTasks(): void {
+    foregroundWorker?.kill();
+    foregroundWorker = undefined;
     for (const info of tasks.values()) {
         clearTimeout(info.timeout);
         if (readTaskPayload(info).task?.running) {
@@ -743,6 +912,8 @@ function toolTimeoutSeconds(
         Math.max(1, pollInterval * 2),
     );
     switch (name) {
+        case "observe":
+            return numberEnv("KSPBENCH_OBSERVE_TIMEOUT", 15);
         case "wait":
             return Math.max(defaultTimeout, optionalNumber(args.seconds) + padding);
         case "execute_python":
@@ -794,6 +965,11 @@ function validateToolArguments(
         case "observe":
         case "stage":
             rejectUnexpected(name, args, []);
+            return;
+        case "krpc_api":
+            rejectUnexpected(name, args, ["query"]);
+            if (typeof args.query !== "string" || !args.query.trim())
+                throw new Error("krpc_api.query must be a non-empty string");
             return;
         case "reset_launchpad":
             rejectUnexpected(name, args, ["wait_s"]);

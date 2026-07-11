@@ -11,6 +11,9 @@ from bench.agent_adapters import (
     AGENT_NAME,
     REFERENCE_DIR,
     OpenCodeAgentAdapter,
+    _build_krpc_api_index,
+    _format_krpc_api_markdown,
+    _format_opencode_json_line,
     _format_opencode_terminal_chunk,
     _format_opencode_terminal_line,
     _run_captured,
@@ -19,6 +22,33 @@ from bench.agent_adapters import (
     prepare_opencode_workspace,
 )
 from bench.config import load_scenario
+
+
+def test_build_krpc_api_index_extracts_public_python_surface(tmp_path) -> None:
+    service = tmp_path / "spacecenter.py"
+    service.write_text(
+        "class Engine:\n"
+        "    @property\n"
+        "    def available_thrust(self) -> float:\n"
+        "        \"\"\"Available thrust in Newtons. More detail.\"\"\"\n"
+        "        return 0.0\n"
+        "    @available_thrust.setter\n"
+        "    def available_thrust(self, value: float):\n"
+        "        pass\n"
+        "    def activate(self) -> None:\n"
+        "        pass\n"
+        "    def _build_call_activate(self):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    index = _build_krpc_api_index(service)
+    members = index["classes"]["Engine"]["members"]
+    markdown = _format_krpc_api_markdown(index)
+
+    assert [member["name"] for member in members] == ["available_thrust", "activate"]
+    assert members[0]["signature"] == "available_thrust -> float"
+    assert "Available thrust in Newtons" in markdown
 
 
 def test_opencode_command_uses_project_ksp_agent(tmp_path) -> None:
@@ -169,6 +199,7 @@ def test_prompt_is_flight_focused_without_internal_leaks() -> None:
     assert "KSP flight agent" in prompt
     assert "available KSP tools" in prompt
     assert "krpc_reference" in prompt
+    assert "ksp_krpc_api" in prompt
     assert "real wall-clock time" in prompt
     assert "ksp_observe" not in prompt
     assert "ksp_throttle" in prompt
@@ -217,6 +248,7 @@ def test_ksp_mcp_lists_flight_tools() -> None:
         "start_task",
         "check_task",
         "stop_task",
+        "krpc_api",
     } <= names
     assert "must return quickly" in descriptions["execute_python"]
     assert "Use start_task" in descriptions["execute_python"]
@@ -329,12 +361,14 @@ def test_ksp_mcp_times_out_hung_foreground_process_and_uses_fresh_next_process(
         "#!/usr/bin/env python3\n"
         "import json, os, sys, time\n"
         "marker = os.environ['KSPBENCH_HANG_MARKER']\n"
-        "request = json.loads(sys.stdin.read())\n"
-        "if not os.path.exists(marker):\n"
-        "    handle = open(marker, 'w')\n"
-        "    handle.close()\n"
-        "    time.sleep(60)\n"
-        "print(json.dumps({'result': {'ok': True, 'method': request['method']}}), flush=True)\n",
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if not os.path.exists(marker):\n"
+        "        handle = open(marker, 'w')\n"
+        "        handle.close()\n"
+        "        time.sleep(60)\n"
+        "    print(json.dumps({'id': request['id'], 'result': "
+        "{'ok': True, 'method': request['method']}}), flush=True)\n",
         encoding="utf-8",
     )
     python.chmod(0o755)
@@ -366,6 +400,7 @@ def test_ksp_mcp_times_out_hung_foreground_process_and_uses_fresh_next_process(
         **os.environ,
         "KSPBENCH_PYTHON": str(python),
         "KSPBENCH_MCP_TOOL_TIMEOUT": "0.75",
+        "KSPBENCH_OBSERVE_TIMEOUT": "0.75",
         "KSPBENCH_HANG_MARKER": str(marker),
     }
     completed = subprocess.run(
@@ -505,6 +540,47 @@ def test_format_opencode_terminal_line_pretty_prints_execute_call() -> None:
         "    vehicle = getVehicleState()\n"
         '    print("Telemetry:", telemetry)\n'
     )
+
+
+def test_format_opencode_json_line_pretty_prints_python_tool_input() -> None:
+    line = json.dumps(
+        {
+            "type": "tool_use",
+            "part": {
+                "type": "tool",
+                "tool": "ksp_start_task",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "code": "while not should_stop():\n    sleep(0.5)",
+                        "timeout_s": 180,
+                    },
+                },
+            },
+        }
+    )
+
+    assert _format_opencode_json_line(line) == (
+        "[agent] ksp_start_task\n"
+        "  code:\n"
+        "    while not should_stop():\n"
+        "        sleep(0.5)\n"
+        "  timeout_s: 180\n"
+    )
+
+
+def test_format_opencode_json_line_keeps_non_python_tool_compact() -> None:
+    line = json.dumps(
+        {
+            "type": "tool_use",
+            "part": {
+                "tool": "ksp_throttle",
+                "state": {"input": {"value": 1.0}},
+            },
+        }
+    )
+
+    assert _format_opencode_json_line(line) == "[agent] ksp_throttle\n"
 
 
 def test_format_opencode_terminal_line_leaves_non_ksp_tool_lines_alone() -> None:

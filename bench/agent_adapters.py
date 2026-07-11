@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,8 @@ Mission target:
 Use the available KSP tools to accomplish this. Remember, KSP keeps flying in real wall-clock time
 while you think and while tools run.
 
-you have kRPC reference materials available at .opencode/ksp/krpc_reference.
+you have kRPC reference materials available at .opencode/ksp/krpc_reference and can use
+the ksp_krpc_api tool for targeted class/member lookup. Look up unfamiliar names before guessing.
 
 Python snippets receive conn, space_center, vessel, observe(), getTelemetry(),
 getVehicleState(), getOrbitState(), ksp_throttle(), ksp_stage(), ksp_attitude(),
@@ -38,6 +41,9 @@ KRPC_REFERENCE_README = """# kRPC reference for the KSP flight agent
 
 This directory contains kRPC source and Python client reference material for flight control.
 Search it before guessing unfamiliar kRPC names or object paths.
+
+Start with `FLIGHT_API.md` for a compact Python API index. Use the `ksp_krpc_api` tool for
+targeted class/member lookup. The copied client source remains the authoritative fallback.
 
 for example there are:
 
@@ -191,6 +197,16 @@ def prepare_opencode_workspace(
         installed_count = _copy_installed_krpc(reference_dir / "installed_python_client")
         if installed_count:
             counts["installed_python_client"] = installed_count
+            service_file = reference_dir / "installed_python_client/services/spacecenter.py"
+            if service_file.is_file():
+                api_index = _build_krpc_api_index(service_file)
+                (reference_dir / "API_INDEX.json").write_text(
+                    json.dumps(api_index, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                (reference_dir / "FLIGHT_API.md").write_text(
+                    _format_krpc_api_markdown(api_index), encoding="utf-8"
+                )
 
     source_repo = krpc_repo or _default_krpc_repo()
     if source_repo is not None:
@@ -222,10 +238,98 @@ def _remove_generated_reference(reference_dir: Path) -> None:
         "upstream_python_client",
         "upstream_spacecenter_service",
         "upstream_docs",
+        "API_INDEX.json",
+        "FLIGHT_API.md",
     ):
         path = reference_dir / name
         if path.exists():
-            shutil.rmtree(path)
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+
+_FLIGHT_API_CLASSES = {
+    "AutoPilot",
+    "Control",
+    "Engine",
+    "Flight",
+    "Orbit",
+    "Part",
+    "Parts",
+    "Resources",
+    "Vessel",
+}
+
+
+def _build_krpc_api_index(service_file: Path) -> dict[str, Any]:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(service_file.read_text(encoding="utf-8"))
+    classes: dict[str, Any] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name not in _FLIGHT_API_CLASSES:
+            continue
+        members: list[dict[str, str]] = []
+        for child in node.body:
+            if not isinstance(child, ast.FunctionDef) or child.name.startswith("_"):
+                continue
+            decorators = {ast.unparse(item) for item in child.decorator_list}
+            if any(decorator.endswith(".setter") for decorator in decorators):
+                continue
+            kind = "property" if "property" in decorators else "method"
+            if kind == "property":
+                signature = child.name
+            else:
+                args = [arg for arg in child.args.args if arg.arg not in {"self", "cls"}]
+                rendered_args: list[str] = []
+                defaults_start = len(args) - len(child.args.defaults)
+                for index, arg in enumerate(args):
+                    rendered = arg.arg
+                    if arg.annotation is not None:
+                        rendered += f": {ast.unparse(arg.annotation)}"
+                    if index >= defaults_start:
+                        rendered += f" = {ast.unparse(child.args.defaults[index - defaults_start])}"
+                    rendered_args.append(rendered)
+                signature = f"{child.name}({', '.join(rendered_args)})"
+            if child.returns is not None:
+                signature += f" -> {ast.unparse(child.returns)}"
+            doc = " ".join((ast.get_docstring(child) or "").split())
+            members.append(
+                {
+                    "name": child.name,
+                    "kind": kind,
+                    "signature": signature,
+                    "summary": doc.split(". ", 1)[0].rstrip("."),
+                }
+            )
+        class_doc = " ".join((ast.get_docstring(node) or "").split())
+        classes[node.name] = {
+            "summary": class_doc.split(". ", 1)[0],
+            "members": members,
+        }
+    return {
+        "source": "installed_python_client/services/spacecenter.py",
+        "classes": classes,
+    }
+
+
+def _format_krpc_api_markdown(api_index: dict[str, Any]) -> str:
+    lines = [
+        "# Flight-relevant kRPC Python API",
+        "",
+        "Generated from the installed kRPC Python client. Search this file or use "
+        "`ksp_krpc_api` before guessing member names.",
+        "",
+    ]
+    for class_name, class_info in api_index.get("classes", {}).items():
+        lines.extend([f"## {class_name}", ""])
+        for member in class_info.get("members", []):
+            summary = member.get("summary", "")
+            suffix = f" — {summary}" if summary else ""
+            lines.append(f"- `{member['signature']}`{suffix}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _copy_installed_krpc(target: Path) -> int:
@@ -320,6 +424,7 @@ def _source_index(counts: dict[str, int]) -> str:
         [
             "",
             "High-value files when present:",
+            "- `FLIGHT_API.md` (generated compact class/member index)",
             "- `installed_python_client/services/spacecenter.py`",
             "- `upstream_spacecenter_service/Vessel.cs`",
             "- `upstream_spacecenter_service/AutoPilot.cs`",
@@ -521,6 +626,9 @@ def _format_opencode_json_line(line: str) -> str:
 
     tool = _event_tool_name(event)
     if tool:
+        arguments = _event_tool_arguments(event, tool)
+        if arguments is not None:
+            return _format_tool_call(tool, arguments)
         return f"[agent] {tool}\n"
     text = _event_text(event)
     if text:
@@ -537,6 +645,25 @@ def _event_tool_name(event: dict[str, Any]) -> str | None:
         if isinstance(value, dict):
             found = _event_tool_name(value)
             if found:
+                return found
+    return None
+
+
+def _event_tool_arguments(event: dict[str, Any], tool: str) -> dict[str, Any] | None:
+    if tool in event.values():
+        for key in ("arguments", "args", "input"):
+            value = event.get(key)
+            if isinstance(value, dict):
+                return value
+        state = event.get("state")
+        if isinstance(state, dict):
+            value = state.get("input")
+            if isinstance(value, dict):
+                return value
+    for value in event.values():
+        if isinstance(value, dict):
+            found = _event_tool_arguments(value, tool)
+            if found is not None:
                 return found
     return None
 
@@ -584,15 +711,24 @@ def _format_opencode_terminal_line(line: str) -> str:
     if not isinstance(decoded, dict):
         return f"[agent] {tool} {json.dumps(decoded, sort_keys=True)}{line_end}"
 
+    return _format_tool_call(tool, decoded, line_end=line_end)
+
+
+def _format_tool_call(tool: str, arguments: dict[str, Any], *, line_end: str = "\n") -> str:
+    if "code" not in arguments:
+        return f"[agent] {tool}{line_end}"
+
     lines = [f"[agent] {tool}"]
-    code = decoded.get("code")
+    code = arguments.get("code")
     if isinstance(code, str):
         lines.append("  code:")
         lines.extend(f"    {code_line}" for code_line in code.rstrip().splitlines())
-    timeout = decoded.get("timeout_s")
+    timeout = arguments.get("timeout_s")
     if timeout is not None:
         lines.append(f"  timeout_s: {timeout}")
-    extras = {key: value for key, value in decoded.items() if key not in {"code", "timeout_s"}}
+    extras = {
+        key: value for key, value in arguments.items() if key not in {"code", "timeout_s"}
+    }
     for key, value in sorted(extras.items()):
         lines.append(f"  {key}: {json.dumps(value, sort_keys=True)}")
     return "\n".join(lines) + line_end
