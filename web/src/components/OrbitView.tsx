@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatSeconds, modelLabel } from "@/lib/format";
 import { loadFlightTrace } from "@/lib/data";
+import { projectedAltitude, type AltitudePoint } from "@/lib/trajectory";
 import type { BenchmarkRun, FlightTrace } from "@/types";
 
 const COLORS = ["#95e6b8", "#5ac8fa", "#ff8d5c", "#d9a7ff", "#f7d154", "#ff86b9"];
 
-type Point = { t: number; alt: number };
+type Point = AltitudePoint;
 type FlightEvent = NonNullable<FlightTrace["events"]>[number];
 
 export function OrbitView({ runs }: { runs: BenchmarkRun[] }) {
@@ -74,8 +75,9 @@ function AltitudeChart({ traces, selectedId }: { traces: { run: BenchmarkRun; co
   const width = 960;
   const height = 400;
   const pad = { l: 58, r: 24, t: 20, b: 42 };
-  const maxTime = Math.max(...traces.flatMap(({ points }) => points.map((point) => point.t)), 1);
-  const maxAltitude = Math.max(100000, ...traces.flatMap(({ points }) => points.map((point) => point.alt)));
+  const plotted = traces.map((trace) => ({ ...trace, projected: projectedAltitude(trace.run, trace.points) }));
+  const maxTime = Math.max(...plotted.flatMap(({ points, projected }) => [...points, ...projected].map((point) => point.t)), 1);
+  const maxAltitude = Math.max(100000, ...plotted.flatMap(({ points, projected }) => [...points, ...projected].map((point) => point.alt)));
   const x = (value: number) => pad.l + (value / maxTime) * (width - pad.l - pad.r);
   const y = (value: number) => height - pad.b - (Math.max(0, value) / maxAltitude) * (height - pad.t - pad.b);
   const path = (points: Point[]) => points.map((point, index) => `${index ? "L" : "M"}${x(point.t).toFixed(1)},${y(point.alt).toFixed(1)}`).join(" ");
@@ -91,9 +93,10 @@ function AltitudeChart({ traces, selectedId }: { traces: { run: BenchmarkRun; co
         ))}
         <line x1={pad.l} x2={width - pad.r} y1={y(80000)} y2={y(80000)} className="chart-target" />
         {[0, 0.25, 0.5, 0.75, 1].map((tick) => <text key={tick} x={x(maxTime * tick)} y={height - 14} textAnchor="middle">{formatSeconds(maxTime * tick)}</text>)}
-        {traces.map(({ run, color, points }) => (
-          <path key={run.runId} d={path(points)} stroke={color} className={`chart-line ${run.runId === selectedId ? "is-focused" : ""}`} />
-        ))}
+        {plotted.map(({ run, color, points, projected }) => <g key={run.runId}>
+          <path d={path(points)} stroke={color} className={`chart-line ${run.runId === selectedId ? "is-focused" : ""}`} />
+          {projected.length ? <path d={path(projected)} stroke={color} className={`chart-line chart-line--projected ${run.runId === selectedId ? "is-focused" : ""}`} /> : null}
+        </g>)}
         {traces.flatMap(({ run, color, events }) => events.map((event, index) => (
           <circle
             className={`chart-event ${event.ok ? "" : "is-error"}`}
