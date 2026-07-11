@@ -74,10 +74,17 @@ uv run kspbench run scenarios/kerbin_orbit_80km.toml \
 ```
 
 Each `run` records the OpenCode session's input, cached-input, output, and reasoning
-token counts in `agent_process.json`. For supported OpenAI models it also records a
-`cost_usd` API-equivalent estimate using standard API rates. Supported free OpenCode models
-use a comparable paid OpenRouter list price instead. This is a comparison metric, not the
-amount billed to a ChatGPT or OpenCode subscription.
+token counts in `agent_process.json`. For supported model IDs it also records a
+`cost_usd` API-equivalent estimate using standard API rates, independent of the wrapper or
+provider used to run the model. Supported free model aliases use a comparable paid OpenRouter
+list price instead. This is a comparison metric, not the amount billed to a ChatGPT or OpenCode
+subscription.
+
+Reapply the current pricing catalog to existing run artifacts and published data with:
+
+```bash
+uv run python -m bench.backfill_costs
+```
 
 Each score records both `wall_clock_elapsed_s` (the elapsed benchmark-process time used for
 time comparisons) and `mission_elapsed_s` (KSP MET used for flight replay). KSP MET can be

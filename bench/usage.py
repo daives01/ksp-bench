@@ -11,27 +11,58 @@ from typing import Any  # noqa: I001
 # and free-model usage, so these are intentionally never treated as invoices.
 # Reasoning tokens are billed at the output rate. Keep this table current when
 # a provider changes its public API pricing.
-API_EQUIVALENT_RATES: dict[tuple[str, str], tuple[float, float, float, str]] = {
-    ("openai", "gpt-5.5"): (5.00, 0.50, 30.00, "OpenAI standard API"),
-    ("openai", "gpt-5.4"): (2.50, 0.25, 15.00, "OpenAI standard API"),
-    ("openai", "gpt-5.4-mini"): (0.75, 0.075, 4.50, "OpenAI standard API"),
-    ("openai", "gpt-5.4-nano"): (0.20, 0.02, 1.25, "OpenAI standard API"),
-    ("openai", "gpt-5"): (1.25, 0.125, 10.00, "OpenAI standard API"),
+API_EQUIVALENT_RATES: dict[str, tuple[float, float, float, str]] = {
+    "gpt-5.5": (5.00, 0.50, 30.00, "OpenAI standard API"),
+    "gpt-5.4": (2.50, 0.25, 15.00, "OpenAI standard API"),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50, "OpenAI standard API"),
+    "gpt-5.4-nano": (0.20, 0.02, 1.25, "OpenAI standard API"),
+    "gpt-5": (1.25, 0.125, 10.00, "OpenAI standard API"),
     # These free OpenCode aliases are mapped to the equivalent paid OpenRouter
     # model, not priced as $0. They make like-for-like model comparisons useful.
-    ("opencode", "deepseek-v4-flash-free"): (
+    "deepseek-v4-flash": (
         0.09,
         0.018,
         0.18,
         "OpenRouter list price: deepseek/deepseek-v4-flash",
     ),
-    ("opencode", "mimo-v2.5-free"): (
+    "deepseek-v4-flash-free": (
+        0.09,
+        0.018,
+        0.18,
+        "OpenRouter list price: deepseek/deepseek-v4-flash",
+    ),
+    "deepseek-v4-pro": (
+        0.435,
+        0.087,
+        0.87,
+        "OpenRouter list price: deepseek/deepseek-v4-pro",
+    ),
+    "glm-5.2": (0.42, 0.084, 1.32, "OpenRouter list price: z-ai/glm-5.2"),
+    "kimi-k2.6": (
+        0.68,
+        0.34,
+        3.41,
+        "OpenRouter list price: moonshotai/kimi-k2.6",
+    ),
+    "mimo-v2.5": (
         0.105,
         0.028,
         0.28,
         "OpenRouter list price: xiaomi/mimo-v2.5",
     ),
-    ("opencode", "nemotron-3-ultra-free"): (
+    "minimax-m2.7": (
+        0.25,
+        0.05,
+        1.00,
+        "OpenRouter list price: minimax/minimax-m2.7",
+    ),
+    "mimo-v2.5-free": (
+        0.105,
+        0.028,
+        0.28,
+        "OpenRouter list price: xiaomi/mimo-v2.5",
+    ),
+    "nemotron-3-ultra-free": (
         0.50,
         0.10,
         2.20,
@@ -103,7 +134,6 @@ def collect_opencode_session_usage(
         + cache_write_tokens
     )
     pricing = _api_equivalent_pricing(
-        provider=provider,
         model=model,
         input_tokens=billable_input_tokens,
         cached_input_tokens=cached_input_tokens,
@@ -158,15 +188,14 @@ def _parse_model(raw_model: Any) -> tuple[str | None, str | None]:
 
 def _api_equivalent_pricing(
     *,
-    provider: str | None,
     model: str | None,
     input_tokens: int,
     cached_input_tokens: int,
     output_tokens: int,
 ) -> tuple[float, str] | None:
-    if provider is None or model is None:
+    if model is None:
         return None
-    rate = API_EQUIVALENT_RATES.get((provider, model))
+    rate = API_EQUIVALENT_RATES.get(model)
     if rate is None:
         return None
     input_rate, cached_input_rate, output_rate, pricing_source = rate

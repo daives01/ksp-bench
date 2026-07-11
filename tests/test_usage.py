@@ -88,7 +88,7 @@ def test_collect_opencode_session_usage_keeps_tokens_for_unknown_pricing(tmp_pat
     assert usage["cost_kind"] is None
 
 
-def test_collect_opencode_session_usage_prices_supported_free_opencode_model(tmp_path) -> None:
+def test_collect_opencode_session_usage_prices_model_independent_of_provider(tmp_path) -> None:
     database = tmp_path / "opencode.db"
     with sqlite3.connect(database) as connection:
         connection.execute(
@@ -105,7 +105,7 @@ def test_collect_opencode_session_usage_prices_supported_free_opencode_model(tmp
             (
                 "ses_deepseek",
                 "kspbench:run-3",
-                json.dumps({"providerID": "opencode", "id": "deepseek-v4-flash-free"}),
+                json.dumps({"providerID": "opencode-go", "id": "deepseek-v4-flash"}),
                 1_000_000,
                 100_000,
                 20_000,
@@ -118,5 +118,6 @@ def test_collect_opencode_session_usage_prices_supported_free_opencode_model(tmp
     usage = collect_opencode_session_usage("kspbench:run-3", data_dir=tmp_path)
 
     assert usage is not None
+    assert usage["provider"] == "opencode-go"
     assert usage["cost_usd"] == 0.1476
     assert usage["pricing_source"] == "OpenRouter list price: deepseek/deepseek-v4-flash"
