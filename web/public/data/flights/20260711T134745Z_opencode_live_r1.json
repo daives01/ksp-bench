@@ -1,0 +1,103 @@
+{
+  "columns": [
+    "t",
+    "alt",
+    "apo",
+    "peri",
+    "lat",
+    "lon",
+    "speed",
+    "stage",
+    "fuel",
+    "q"
+  ],
+  "events": [
+    {
+      "alt": 76.4,
+      "label": "Attitude pitch 90.0\u00b0, heading 90.0\u00b0",
+      "ok": true,
+      "t": 0.0,
+      "type": "set_attitude"
+    },
+    {
+      "alt": 76.4,
+      "label": "Throttle 100%",
+      "ok": true,
+      "t": 0.0,
+      "type": "set_throttle"
+    },
+    {
+      "alt": 77.8,
+      "label": "Stage",
+      "ok": true,
+      "t": 0.58,
+      "type": "stage"
+    },
+    {
+      "alt": 76.4,
+      "label": "Control task started",
+      "ok": true,
+      "t": 0.0,
+      "type": "start_task"
+    },
+    {
+      "alt": 72.7,
+      "label": "wait: FlightTerminated",
+      "ok": false,
+      "t": 12.28,
+      "type": "wait"
+    }
+  ],
+  "interval_s": 10.0,
+  "points": [
+    [
+      0.0,
+      76.4,
+      76.4,
+      -598435.3,
+      -0.09721,
+      -74.55768,
+      175.0,
+      6,
+      2050.0,
+      0.0
+    ],
+    [
+      0.58,
+      77.8,
+      78.6,
+      -598437.6,
+      -0.09721,
+      -74.55768,
+      174.9,
+      5,
+      2033.46,
+      9.5
+    ],
+    [
+      10.2,
+      203.2,
+      274.8,
+      -596647.6,
+      -0.06928,
+      -74.53343,
+      258.4,
+      5,
+      1795.52,
+      6585.9
+    ],
+    [
+      12.28,
+      72.7,
+      483.0,
+      -596238.7,
+      -0.05268,
+      -74.51839,
+      285.1,
+      0,
+      0.0,
+      0.0
+    ]
+  ],
+  "schema_version": 2
+}
