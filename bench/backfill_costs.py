@@ -53,9 +53,9 @@ def _update_usage(value: Any) -> int:
         return 0
     pricing = _api_equivalent_pricing(
         model=model,
-        input_tokens=int(value.get("input_tokens") or 0)
-        + int(value.get("cache_write_tokens") or 0),
+        input_tokens=int(value.get("input_tokens") or 0),
         cached_input_tokens=int(value.get("cached_input_tokens") or 0),
+        cache_write_tokens=int(value.get("cache_write_tokens") or 0),
         output_tokens=int(value.get("output_tokens") or 0)
         + int(value.get("reasoning_tokens") or 0),
     )

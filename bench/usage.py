@@ -6,67 +6,114 @@ import sqlite3
 from pathlib import Path
 from typing import Any  # noqa: I001
 
-# Comparable API prices per 1M text tokens: input, cached input, output, and
-# the reference pricing label. OpenCode records a zero cost for subscription
-# and free-model usage, so these are intentionally never treated as invoices.
-# Reasoning tokens are billed at the output rate. Keep this table current when
-# a provider changes its public API pricing.
-API_EQUIVALENT_RATES: dict[str, tuple[float, float, float, str]] = {
-    "gpt-5.5": (5.00, 0.50, 30.00, "OpenAI standard API"),
-    "gpt-5.4": (2.50, 0.25, 15.00, "OpenAI standard API"),
-    "gpt-5.4-mini": (0.75, 0.075, 4.50, "OpenAI standard API"),
-    "gpt-5.4-nano": (0.20, 0.02, 1.25, "OpenAI standard API"),
-    "gpt-5": (1.25, 0.125, 10.00, "OpenAI standard API"),
+# Comparable API prices per 1M text tokens: input, cached input, cache write,
+# output, and the reference pricing label. OpenCode records a zero cost for
+# subscription and free-model usage, so these are intentionally never treated
+# as invoices. Reasoning tokens are billed at the output rate. Keep this table
+# current when a provider changes its public API pricing.
+API_EQUIVALENT_RATES: dict[str, tuple[float, float, float, float, str]] = {
+    "gpt-5.6": (5.00, 0.50, 6.25, 30.00, "OpenAI standard API"),
+    "gpt-5.6-sol": (5.00, 0.50, 6.25, 30.00, "OpenAI standard API"),
+    "gpt-5.6-terra": (2.50, 0.25, 3.125, 15.00, "OpenAI standard API"),
+    "gpt-5.6-luna": (1.00, 0.10, 1.25, 6.00, "OpenAI standard API"),
+    "gpt-5.5": (5.00, 0.50, 5.00, 30.00, "OpenAI standard API"),
+    "gpt-5.4": (2.50, 0.25, 2.50, 15.00, "OpenAI standard API"),
+    "gpt-5.4-mini": (0.75, 0.075, 0.75, 4.50, "OpenAI standard API"),
+    "gpt-5.4-nano": (0.20, 0.02, 0.20, 1.25, "OpenAI standard API"),
+    "gpt-5": (1.25, 0.125, 1.25, 10.00, "OpenAI standard API"),
     # These free OpenCode aliases are mapped to the equivalent paid OpenRouter
     # model, not priced as $0. They make like-for-like model comparisons useful.
     "deepseek-v4-flash": (
         0.09,
         0.018,
+        0.09,
         0.18,
         "OpenRouter list price: deepseek/deepseek-v4-flash",
     ),
     "deepseek-v4-flash-free": (
         0.09,
         0.018,
+        0.09,
         0.18,
         "OpenRouter list price: deepseek/deepseek-v4-flash",
     ),
     "deepseek-v4-pro": (
         0.435,
         0.087,
+        0.435,
         0.87,
         "OpenRouter list price: deepseek/deepseek-v4-pro",
     ),
-    "glm-5.2": (0.42, 0.084, 1.32, "OpenRouter list price: z-ai/glm-5.2"),
+    "glm-5.2": (0.42, 0.084, 0.42, 1.32, "OpenRouter list price: z-ai/glm-5.2"),
     "kimi-k2.6": (
         0.68,
         0.34,
+        0.68,
         3.41,
         "OpenRouter list price: moonshotai/kimi-k2.6",
+    ),
+    "kimi-k2.7-code": (
+        0.74,
+        0.15,
+        0.74,
+        3.50,
+        "OpenRouter price: moonshotai/kimi-k2.7-code",
     ),
     "mimo-v2.5": (
         0.105,
         0.028,
+        0.105,
         0.28,
         "OpenRouter list price: xiaomi/mimo-v2.5",
     ),
     "minimax-m2.7": (
         0.25,
         0.05,
+        0.25,
         1.00,
         "OpenRouter list price: minimax/minimax-m2.7",
+    ),
+    "minimax-m3": (
+        0.30,
+        0.06,
+        0.30,
+        1.20,
+        "OpenRouter price: minimax/minimax-m3",
     ),
     "mimo-v2.5-free": (
         0.105,
         0.028,
+        0.105,
         0.28,
         "OpenRouter list price: xiaomi/mimo-v2.5",
     ),
     "nemotron-3-ultra-free": (
         0.50,
         0.10,
+        0.50,
         2.20,
         "OpenRouter list price: nvidia/nemotron-3-ultra-550b-a55b",
+    ),
+    "qwen3.6-plus": (
+        0.325,
+        0.065,
+        0.40625,
+        1.95,
+        "OpenRouter price: qwen/qwen3.6-plus",
+    ),
+    "qwen3.7-plus": (
+        0.32,
+        0.064,
+        0.40,
+        1.28,
+        "OpenRouter price: qwen/qwen3.7-plus",
+    ),
+    "qwen3.7-max": (
+        1.25,
+        0.25,
+        1.5625,
+        3.75,
+        "OpenRouter price: qwen/qwen3.7-max",
     ),
 }
 
@@ -123,9 +170,6 @@ def collect_opencode_session_usage(
     cached_input_tokens = int(cache_read or 0)
     cache_write_tokens = int(cache_write or 0)
 
-    # Cache writes are not discounted cached reads, so count them as standard
-    # input for OpenAI's pricing and expose them separately for future models.
-    billable_input_tokens = input_tokens + cache_write_tokens
     total_tokens = (
         input_tokens
         + output_tokens
@@ -135,8 +179,9 @@ def collect_opencode_session_usage(
     )
     pricing = _api_equivalent_pricing(
         model=model,
-        input_tokens=billable_input_tokens,
+        input_tokens=input_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
         output_tokens=output_tokens + reasoning_tokens,
     )
 
@@ -191,6 +236,7 @@ def _api_equivalent_pricing(
     model: str | None,
     input_tokens: int,
     cached_input_tokens: int,
+    cache_write_tokens: int,
     output_tokens: int,
 ) -> tuple[float, str] | None:
     if model is None:
@@ -198,9 +244,16 @@ def _api_equivalent_pricing(
     rate = API_EQUIVALENT_RATES.get(model)
     if rate is None:
         return None
-    input_rate, cached_input_rate, output_rate, pricing_source = rate
+    (
+        input_rate,
+        cached_input_rate,
+        cache_write_rate,
+        output_rate,
+        pricing_source,
+    ) = rate
     return (
         input_tokens * input_rate
         + cached_input_tokens * cached_input_rate
+        + cache_write_tokens * cache_write_rate
         + output_tokens * output_rate
     ) / 1_000_000, pricing_source

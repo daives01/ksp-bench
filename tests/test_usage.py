@@ -2,8 +2,44 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
-from bench.usage import collect_opencode_session_usage
+from bench.usage import _api_equivalent_pricing, collect_opencode_session_usage
+
+
+def test_every_published_model_with_token_usage_has_pricing() -> None:
+    index_path = Path(__file__).parents[1] / "web" / "public" / "data" / "index.json"
+    document = json.loads(index_path.read_text(encoding="utf-8"))
+
+    unpriced_models = {
+        usage["model"]
+        for run in document["runs"]
+        if isinstance((usage := run.get("usage")), dict)
+        and usage.get("total_tokens")
+        and _api_equivalent_pricing(
+            model=usage.get("model"),
+            input_tokens=int(usage.get("input_tokens") or 0),
+            cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
+            cache_write_tokens=int(usage.get("cache_write_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0)
+            + int(usage.get("reasoning_tokens") or 0),
+        )
+        is None
+    }
+
+    assert unpriced_models == set()
+
+
+def test_gpt_5_6_prices_cache_writes_at_the_documented_rate() -> None:
+    pricing = _api_equivalent_pricing(
+        model="gpt-5.6-sol",
+        input_tokens=0,
+        cached_input_tokens=0,
+        cache_write_tokens=1_000_000,
+        output_tokens=0,
+    )
+
+    assert pricing == (6.25, "OpenAI standard API")
 
 
 def test_collect_opencode_session_usage_records_tokens_and_api_equivalent_cost(tmp_path) -> None:
