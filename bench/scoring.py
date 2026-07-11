@@ -65,10 +65,11 @@ def score_trace(
         "stable_orbit": _is_qualifying_orbit(scenario, final),
     }
     orbit_error_m = _orbit_error_m(scenario, final)
-    score = 0.0
-    score += scenario.scoring.cleared_tower_points if milestones["cleared_tower"] else 0.0
-    score += scenario.scoring.reached_10km_points if milestones["reached_10km"] else 0.0
-    score += scenario.scoring.reached_space_points if milestones["reached_space"] else 0.0
+    ascent_points = _ascent_points(scenario, max_altitude)
+    circularization_points = _circularization_points(
+        scenario, max_apoapsis, max_periapsis
+    )
+    score = ascent_points + circularization_points
     if milestones["stable_orbit"]:
         score += scenario.scoring.stable_orbit_points
         score += _orbit_precision_points(scenario, orbit_error_m)
@@ -104,6 +105,8 @@ def score_trace(
         "max_altitude_m": round(max_altitude, 3),
         "max_apoapsis_m": round(max_apoapsis, 3),
         "max_periapsis_m": round(max_periapsis, 3),
+        "ascent_points": round(ascent_points, 3),
+        "circularization_points": round(circularization_points, 3),
         **milestones,
         "invalid_actions": invalid_actions,
         "action_count": action_count,
@@ -177,6 +180,8 @@ def _empty_result(
             "max_altitude_m": 0.0,
             "max_apoapsis_m": 0.0,
             "max_periapsis_m": 0.0,
+            "ascent_points": 0.0,
+            "circularization_points": 0.0,
             "cleared_tower": False,
             "reached_10km": False,
             "reached_space": False,
@@ -205,6 +210,22 @@ def _orbit_precision_points(scenario: Scenario, orbit_error_m: float) -> float:
         return scenario.scoring.orbit_precision_points
     fraction = 1.0 - ((orbit_error_m - tolerance) / (zero_credit - tolerance))
     return scenario.scoring.orbit_precision_points * max(0.0, fraction)
+
+
+def _ascent_points(scenario: Scenario, max_altitude_m: float) -> float:
+    """Award continuous ascent credit up to the edge of space."""
+    progress = max(0.0, max_altitude_m) / scenario.scoring.reached_space_m
+    return scenario.scoring.ascent_points * min(1.0, progress)
+
+
+def _circularization_points(
+    scenario: Scenario, max_apoapsis_m: float, max_periapsis_m: float
+) -> float:
+    """Reward raising periapsis after the trajectory's apoapsis reaches space."""
+    if max_apoapsis_m < scenario.scoring.reached_space_m:
+        return 0.0
+    progress = max(0.0, max_periapsis_m) / scenario.target_orbit.stable_periapsis_min_m
+    return scenario.scoring.circularization_points * min(1.0, progress)
 
 
 def _is_qualifying_orbit(scenario: Scenario, final: TelemetrySample) -> bool:
@@ -243,9 +264,8 @@ def _reserve_delta_v_points(scenario: Scenario, final: TelemetrySample) -> float
 def _maximum_score(scenario: Scenario) -> float:
     scoring = scenario.scoring
     return (
-        scoring.cleared_tower_points
-        + scoring.reached_10km_points
-        + scoring.reached_space_points
+        scoring.ascent_points
+        + scoring.circularization_points
         + scoring.stable_orbit_points
         + scoring.orbit_precision_points
         + scoring.reserve_delta_v_points

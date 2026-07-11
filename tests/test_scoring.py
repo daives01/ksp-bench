@@ -129,7 +129,61 @@ def test_orbit_credit_requires_the_intended_body_and_live_vessel() -> None:
             harness_version="test",
         )
         assert result.diagnostics["stable_orbit"] is False
-        assert result.score == 20.0
+        assert result.score == 50.0
+
+
+def test_partial_flights_receive_continuous_altitude_credit() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    low = score_trace(
+        run_id="low",
+        scenario=scenario,
+        telemetry=[
+            _sample(
+                altitude_m=14000.0,
+                apoapsis_m=18000.0,
+                periapsis_m=-500000.0,
+                situation="flying",
+            )
+        ],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+    high = score_trace(
+        run_id="high",
+        scenario=scenario,
+        telemetry=[
+            _sample(
+                altitude_m=56000.0,
+                apoapsis_m=60000.0,
+                periapsis_m=-500000.0,
+                situation="flying",
+            )
+        ],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+
+    assert low.score == 4.0
+    assert high.score == 16.0
+
+
+def test_raising_periapsis_receives_continuous_circularization_credit() -> None:
+    scenario = load_scenario(Path("scenarios/kerbin_orbit_80km.toml"))
+
+    result = score_trace(
+        run_id="test",
+        scenario=scenario,
+        telemetry=[
+            _sample(apoapsis_m=600000.0, periapsis_m=35000.0, situation="flying")
+        ],
+        agent={"name": "opencode", "model": "test-model", "adapter": "opencode"},
+        harness_version="test",
+    )
+
+    assert result.score == 35.0
+    assert result.diagnostics["ascent_points"] == 20.0
+    assert result.diagnostics["circularization_points"] == 15.0
 
 
 def test_invalid_run_is_visible_in_score_diagnostics() -> None:
@@ -162,7 +216,7 @@ def test_stable_orbit_misses_target_but_keeps_partial_credit() -> None:
 
     assert result.diagnostics["stable_orbit"] is True
     assert result.final_orbit["orbit_error_m"] == 25000.0
-    assert 50 < result.score < 80
+    assert result.score == 80.0
 
 
 def test_missing_legacy_delta_v_does_not_receive_reserve_credit() -> None:

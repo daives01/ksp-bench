@@ -17,9 +17,8 @@ class ScoringConfig:
     cleared_tower_m: float
     reached_10km_m: float
     reached_space_m: float
-    cleared_tower_points: float
-    reached_10km_points: float
-    reached_space_points: float
+    ascent_points: float
+    circularization_points: float
     stable_orbit_points: float
     orbit_precision_points: float
     orbit_precision_tolerance_m: float
@@ -82,14 +81,9 @@ class Scenario:
                 reached_space_m=_expect_number(
                     scoring["reached_space_m"], "scoring.reached_space_m"
                 ),
-                cleared_tower_points=_expect_number(
-                    scoring["cleared_tower_points"], "scoring.cleared_tower_points"
-                ),
-                reached_10km_points=_expect_number(
-                    scoring["reached_10km_points"], "scoring.reached_10km_points"
-                ),
-                reached_space_points=_expect_number(
-                    scoring["reached_space_points"], "scoring.reached_space_points"
+                ascent_points=_expect_number(scoring["ascent_points"], "scoring.ascent_points"),
+                circularization_points=_expect_number(
+                    scoring["circularization_points"], "scoring.circularization_points"
                 ),
                 stable_orbit_points=_expect_number(
                     scoring["stable_orbit_points"], "scoring.stable_orbit_points"
