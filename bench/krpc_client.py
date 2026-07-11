@@ -19,6 +19,13 @@ _PROPELLANT_DENSITY_KG_PER_UNIT = {
 }
 
 
+def _krpc_client_name(model: str | None = None) -> str:
+    model_name = model or environ.get("KSPBENCH_MODEL")
+    if not model_name:
+        return "KSP Bench"
+    return model_name.rsplit("/", 1)[-1]
+
+
 @dataclass(frozen=True)
 class KRPCConfig:
     host: str = "127.0.0.1"
@@ -88,6 +95,7 @@ class KRPCController:
         config: KRPCConfig | None = None,
         *,
         strict_vessel: bool = True,
+        model: str | None = None,
     ) -> KRPCController:
         try:
             import krpc  # type: ignore
@@ -98,7 +106,7 @@ class KRPCController:
 
         krpc_config = config or KRPCConfig.from_env()
         conn = krpc.connect(
-            name="KSP-bench",
+            name=_krpc_client_name(model),
             address=krpc_config.host,
             rpc_port=krpc_config.rpc_port,
             stream_port=krpc_config.stream_port,

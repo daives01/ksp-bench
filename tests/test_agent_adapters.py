@@ -77,6 +77,7 @@ def test_opencode_environment_disables_privileged_reset_tool(tmp_path, monkeypat
     )
 
     assert env["KSPBENCH_ENABLE_RESET_TOOL"] == "0"
+    assert env["KSPBENCH_MODEL"] == "openai/gpt-5.4"
 
 
 def test_agent_process_stops_when_run_terminated_event_appears(tmp_path) -> None:

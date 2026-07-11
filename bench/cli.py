@@ -364,6 +364,8 @@ def _agent(args: argparse.Namespace) -> int:
     env["KSPBENCH_MAX_SLEEP"] = str(args.max_sleep)
     env["KSPBENCH_POLL_INTERVAL"] = str(args.poll_interval)
     env["KSPBENCH_ENABLE_RESET_TOOL"] = "0"
+    if args.model:
+        env["KSPBENCH_MODEL"] = args.model
     env.setdefault("KSPBENCH_PYTHON", sys.executable)
     print(f"Starting OpenCode KSP agent. Artifacts: {artifacts.run_dir}")
     completed = subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=False)
@@ -427,7 +429,11 @@ def _run(args: argparse.Namespace) -> int:
     artifacts.append_event({"type": "run_started", "mode": "opencode"})
     recorder = TelemetryRecorder(
         artifacts=artifacts,
-        controller_factory=lambda: KRPCController.connect(scenario, strict_vessel=False),
+        controller_factory=lambda: KRPCController.connect(
+            scenario,
+            strict_vessel=False,
+            model=args.model,
+        ),
         interval_s=args.telemetry_interval,
         terminal_reason=lambda sample, vehicle: unrecoverable_no_propulsion_reason(
             sample,

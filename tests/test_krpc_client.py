@@ -3,7 +3,25 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
-from bench.krpc_client import _estimate_remaining_delta_v
+from bench.krpc_client import _estimate_remaining_delta_v, _krpc_client_name
+
+
+def test_krpc_client_name_uses_model_without_provider(monkeypatch) -> None:
+    monkeypatch.delenv("KSPBENCH_MODEL", raising=False)
+
+    assert _krpc_client_name("openai/gpt-5.4") == "gpt-5.4"
+
+
+def test_krpc_client_name_reads_model_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("KSPBENCH_MODEL", "opencode/deepseek-v4-flash-free")
+
+    assert _krpc_client_name() == "deepseek-v4-flash-free"
+
+
+def test_krpc_client_name_falls_back_outside_model_run(monkeypatch) -> None:
+    monkeypatch.delenv("KSPBENCH_MODEL", raising=False)
+
+    assert _krpc_client_name() == "KSP Bench"
 
 
 class FakeResources:
