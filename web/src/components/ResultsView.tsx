@@ -5,11 +5,12 @@ import { loadFlightTrace } from "@/lib/data";
 import { projectedAltitude, type AltitudePoint } from "@/lib/trajectory";
 import { altitudeAnimationDelay } from "@/lib/altitudeAnimation";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { BenchmarkRun, FlightTrace } from "@/types";
 
 const COLORS = ["#95e6b8", "#5ac8fa", "#ff8d5c", "#d9a7ff", "#f7d154", "#ff86b9", "#70d6c1", "#b7b7ff"];
+// Structural rendering and responsive CSS switch together at this boundary.
+const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
 type Metric = "score" | "time" | "cost" | "tokens";
 type Point = AltitudePoint & { apo?: number; peri?: number; speed?: number; stage?: number; fuel?: number; q?: number };
 
@@ -40,6 +41,7 @@ function pointsFor(trace: FlightTrace): Point[] {
 }
 
 export function ResultsView({ runs }: { runs: BenchmarkRun[] }) {
+  const isMobile = useMediaQuery(MOBILE_MEDIA_QUERY);
   const [metric, setMetric] = useState<Metric>("score");
   const [xMetric, setXMetric] = useState<Metric>("cost");
   const [yMetric, setYMetric] = useState<Metric>("score");
@@ -83,31 +85,33 @@ export function ResultsView({ runs }: { runs: BenchmarkRun[] }) {
     return points?.length ? [{ run, points, events: trace.events ?? [], color: colors[run.runId] }] : [];
   });
 
+  const leaderboardPanel = <section className="mission-panel leaderboard-panel">
+    <div className="panel-head"><div className="leaderboard-heading"><h2>Leaderboard</h2><MetricControl value={metric} onChange={setMetric} /></div><ModelFilters runs={runs} selectedIds={selectedIds} setSelectedIds={setSelectedIds} open={filterOpen} setOpen={setFilterOpen} query={query} setQuery={setQuery} /></div>
+    <div className="leaderboard-list"><div className="leaderboard-list__content">
+      {!rankedRuns.length ? <p className="leaderboard-empty">No models selected.</p> : null}
+      {rankedRuns.map((run, index) => {
+        const v = value(run, metric), bar = Number.isFinite(v) && v > 0 ? Math.min(100, Math.max(3, v / metricMax * 100)) : 0;
+        const focused = activeId === run.runId;
+        return <button key={`${metric}-${run.runId}`} className={`leaderboard-row ${focused ? "is-active" : ""}`} style={{ animationDelay: `${index * 36}ms` }} aria-pressed={pinnedId === run.runId} onMouseEnter={() => setHoveredId(run.runId)} onMouseLeave={() => setHoveredId(null)} onFocus={() => setHoveredId(run.runId)} onBlur={() => setHoveredId(null)} onClick={() => setPinnedId(pinnedId === run.runId ? null : run.runId)}>
+          <span className="leaderboard-rank">{String(index + 1).padStart(2, "0")}</span><span className="leaderboard-color" style={{ background: colors[run.runId] }} />
+          <span className="leaderboard-name"><strong>{modelLabel(run.model)}</strong><small>{runOutcome(run)}</small></span>
+          <span className="leaderboard-bar"><i style={{ width: `${bar}%`, background: colors[run.runId] }} /></span><strong className="leaderboard-value">{display(run, metric)}</strong>
+        </button>;
+      })}
+    </div></div>
+  </section>;
+  const flightPanel = <section className="mission-panel flight-panel">
+    <div className="panel-head"><h2>Altitude</h2><span className="target-label">80 km</span></div>
+    {chartTraces.length ? <AltitudeChart traces={chartTraces} activeId={activeId} pinnedId={pinnedId} setPinnedId={setPinnedId} compact={isMobile} /> : <div className="chart-loading">No flights selected.</div>}
+  </section>;
+
   return <section className="unified-bench">
     <div className="unified-bench__layout">
-      <section className="mission-panel leaderboard-panel">
-        <div className="panel-head"><div className="leaderboard-heading"><h2>Leaderboard</h2><MetricControl value={metric} onChange={setMetric} /></div><ModelFilters runs={runs} selectedIds={selectedIds} setSelectedIds={setSelectedIds} open={filterOpen} setOpen={setFilterOpen} query={query} setQuery={setQuery} /></div>
-        <ScrollArea className="leaderboard-list"><div className="leaderboard-list__content">
-          {!rankedRuns.length ? <p className="leaderboard-empty">No models selected.</p> : null}
-          {rankedRuns.map((run, index) => {
-            const v = value(run, metric), bar = Number.isFinite(v) && v > 0 ? Math.min(100, Math.max(3, v / metricMax * 100)) : 0;
-            const focused = activeId === run.runId;
-            return <button key={`${metric}-${run.runId}`} className={`leaderboard-row ${focused ? "is-active" : ""}`} style={{ animationDelay: `${index * 36}ms` }} aria-pressed={pinnedId === run.runId} onMouseEnter={() => setHoveredId(run.runId)} onMouseLeave={() => setHoveredId(null)} onFocus={() => setHoveredId(run.runId)} onBlur={() => setHoveredId(null)} onClick={() => setPinnedId(pinnedId === run.runId ? null : run.runId)}>
-              <span className="leaderboard-rank">{String(index + 1).padStart(2, "0")}</span><span className="leaderboard-color" style={{ background: colors[run.runId] }} />
-              <span className="leaderboard-name"><strong>{modelLabel(run.model)}</strong><small>{runOutcome(run)}</small></span>
-              <span className="leaderboard-bar"><i style={{ width: `${bar}%`, background: colors[run.runId] }} /></span><strong className="leaderboard-value">{display(run, metric)}</strong>
-            </button>;
-          })}
-        </div></ScrollArea>
-      </section>
-      <section className="mission-panel flight-panel">
-        <div className="panel-head"><h2>Altitude</h2><span className="target-label">80 km</span></div>
-        {chartTraces.length ? <AltitudeChart traces={chartTraces} activeId={activeId} pinnedId={pinnedId} setPinnedId={setPinnedId} /> : <div className="chart-loading">No flights selected.</div>}
-      </section>
+      {isMobile ? <>{flightPanel}{leaderboardPanel}</> : <>{leaderboardPanel}{flightPanel}</>}
     </div>
     <section className="mission-panel grid-panel">
       <div className="compare-head"><h2>Compare</h2><div className="axis-controls"><label><span>Y axis</span><MetricControl value={yMetric} onChange={setYMetric} /></label><span className="axis-controls__by">by</span><label><span>X axis</span><MetricControl value={xMetric} onChange={setXMetric} /></label></div></div>
-      <TradeoffGrid runs={visibleRuns} colors={colors} xMetric={xMetric} yMetric={yMetric} activeId={activeId} pinnedId={pinnedId} setHoveredId={setHoveredId} setPinnedId={setPinnedId} setXMetric={setXMetric} setYMetric={setYMetric} />
+      <TradeoffGrid runs={visibleRuns} colors={colors} xMetric={xMetric} yMetric={yMetric} activeId={activeId} pinnedId={pinnedId} setHoveredId={setHoveredId} setPinnedId={setPinnedId} setXMetric={setXMetric} setYMetric={setYMetric} compact={isMobile} />
     </section>
   </section>;
 }
@@ -127,8 +131,8 @@ function ModelFilters({ runs, selectedIds, setSelectedIds, open, setOpen, query,
 
 function MetricControl({ value, onChange }: { value: Metric; onChange: (value: Metric) => void }) { return <Select value={value} onValueChange={(next: string) => onChange(next as Metric)}><SelectTrigger className="metric-control"><SelectValue /></SelectTrigger><SelectContent>{(Object.keys(metricMeta) as Metric[]).map((key) => <SelectItem key={key} value={key}>{metricMeta[key].label}</SelectItem>)}</SelectContent></Select>; }
 
-function AltitudeChart({ traces, activeId, pinnedId, setPinnedId }: { traces: { run: BenchmarkRun; points: Point[]; events: NonNullable<FlightTrace["events"]>; color: string }[]; activeId: string | null; pinnedId: string | null; setPinnedId: (id: string | null) => void }) {
-  const width = 960, height = 600, pad = { l: 70, r: 32, t: 22, b: 66 };
+function AltitudeChart({ traces, activeId, pinnedId, setPinnedId, compact }: { traces: { run: BenchmarkRun; points: Point[]; events: NonNullable<FlightTrace["events"]>; color: string }[]; activeId: string | null; pinnedId: string | null; setPinnedId: (id: string | null) => void; compact: boolean }) {
+  const width = compact ? 320 : 960, height = compact ? 360 : 600, pad = compact ? { l: 42, r: 12, t: 16, b: 44 } : { l: 70, r: 32, t: 22, b: 66 };
   const [tooltip, setTooltip] = useState<{ x: number; y: number; lines: string[] } | null>(null);
   const plotted = traces.map((trace) => ({ ...trace, projected: projectedAltitude(trace.run, trace.points) }));
   const focused = plotted.find(({ run }) => run.runId === activeId);
@@ -192,8 +196,8 @@ function ChartTooltip({ x, y, lines, width }: { x: number; y: number; lines: str
   return <g className="chart-tooltip" pointerEvents="none"><rect x={left} y={top} width={boxWidth} height={boxHeight} rx={7}/><text x={left+12} y={top+19}>{lines.map((line,index)=><tspan className={index===0 ? "chart-tooltip__title" : undefined} x={left+12} dy={index ? 16 : 0} key={line}>{line}</tspan>)}</text></g>;
 }
 
-function TradeoffGrid({ runs, colors, xMetric, yMetric, activeId, pinnedId, setHoveredId, setPinnedId, setXMetric, setYMetric }: { runs: BenchmarkRun[]; colors: Record<string, string>; xMetric: Metric; yMetric: Metric; activeId: string | null; pinnedId: string | null; setHoveredId: (id: string | null) => void; setPinnedId: (id: string | null) => void; setXMetric: (metric: Metric) => void; setYMetric: (metric: Metric) => void }) {
-  const width=960, height=330, pad={l:78,r:34,t:24,b:58}; const finite = (metric: Metric) => runs.map((run) => value(run,metric)).filter(Number.isFinite);
+function TradeoffGrid({ runs, colors, xMetric, yMetric, activeId, pinnedId, setHoveredId, setPinnedId, setXMetric, setYMetric, compact }: { runs: BenchmarkRun[]; colors: Record<string, string>; xMetric: Metric; yMetric: Metric; activeId: string | null; pinnedId: string | null; setHoveredId: (id: string | null) => void; setPinnedId: (id: string | null) => void; setXMetric: (metric: Metric) => void; setYMetric: (metric: Metric) => void; compact: boolean }) {
+  const width=compact?320:960, height=compact?300:330, pad=compact?{l:52,r:12,t:18,b:50}:{l:78,r:34,t:24,b:58}; const finite = (metric: Metric) => runs.map((run) => value(run,metric)).filter(Number.isFinite);
   const extent = (metric: Metric) => niceExtent(finite(metric), metric); const [xmin,xmax]=extent(xMetric), [ymin,ymax]=extent(yMetric);
   const scale=(v:number,min:number,max:number,start:number,end:number,invert=false) => start + ((invert ? max-v : v-min) / Math.max(max-min, 1)) * (end-start);
   const tickDisplay = (metric: Metric, v: number) => metric === "cost" ? formatCost(v) : metric === "time" ? formatSeconds(v) : metric === "tokens" ? Intl.NumberFormat("en", { notation: "compact" }).format(v) : v.toFixed(1);
@@ -219,7 +223,20 @@ function niceExtent(values: number[], metric: Metric): readonly [number, number]
 
 function GridPointTooltip({ run, xMetric, yMetric, cx, cy, width }: { run: BenchmarkRun; xMetric: Metric; yMetric: Metric; cx: number; cy: number; width: number }) {
   const label=modelLabel(run.model), boxWidth=Math.min(270,Math.max(170,label.length*8+24)), boxHeight=52;
-  const left=cx+boxWidth+16>width?cx-boxWidth-14:cx+14;
+  const preferredLeft=cx+boxWidth+16>width?cx-boxWidth-14:cx+14;
+  const left=Math.min(width-boxWidth-8,Math.max(8,preferredLeft));
   const top=Math.max(8,cy-boxHeight/2);
   return <g className="grid-tooltip" pointerEvents="none"><rect x={left} y={top} width={boxWidth} height={boxHeight} rx={6}/><text x={left+11} y={top+19}><tspan className="grid-tooltip__title">{label}</tspan><tspan x={left+11} dy={18}>{metricMeta[xMetric].label} {display(run,xMetric)} · {metricMeta[yMetric].label} {display(run,yMetric)}</tspan></text></g>;
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
 }

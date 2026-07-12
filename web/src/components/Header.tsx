@@ -9,8 +9,8 @@ type HeaderProps = {
 export function Header({ actions, children }: HeaderProps) {
   return (
     <header className="site-header">
-      <div className="mx-auto flex min-h-16 w-full max-w-[90rem] flex-col justify-center px-3 sm:px-4 lg:px-6">
-        <div className="flex items-center justify-between gap-4 py-3">
+      <div className="mx-auto min-h-16 w-full max-w-[90rem] px-3 py-3 sm:px-4 lg:px-6">
+        <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-3">
               <div className="relative grid h-8 w-8 shrink-0 place-items-center">
@@ -21,10 +21,10 @@ export function Header({ actions, children }: HeaderProps) {
                 KSP Bench
               </h1>
             </div>
-            {children ? <div className="pl-11 pt-0.5">{children}</div> : null}
           </div>
           {actions ? <div className="shrink-0">{actions}</div> : null}
         </div>
+        {children ? <div className="site-header__context pl-11 pt-0.5">{children}</div> : null}
       </div>
     </header>
   );
