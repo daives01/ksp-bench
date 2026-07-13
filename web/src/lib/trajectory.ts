@@ -7,14 +7,14 @@ const KERBIN_MU = 3.5316e12;
 const KERBIN_SURFACE_GRAVITY = KERBIN_MU / KERBIN_RADIUS_M ** 2;
 
 /** Continue a trace from its last observed point without presenting predictions as telemetry. */
-export function projectedAltitude(run: BenchmarkRun, points: AltitudePoint[]): AltitudePoint[] {
+export function projectedAltitude(run: BenchmarkRun, points: AltitudePoint[], endTime?: number): AltitudePoint[] {
   if (points.length < 2) return [];
   return run.diagnostics.stable_orbit
-    ? orbitalProjection(run, points.at(-1)!)
-    : ballisticProjection(points);
+    ? orbitalProjection(run, points.at(-1)!, endTime)
+    : ballisticProjection(points, endTime);
 }
 
-function orbitalProjection(run: BenchmarkRun, last: AltitudePoint): AltitudePoint[] {
+function orbitalProjection(run: BenchmarkRun, last: AltitudePoint, endTime?: number): AltitudePoint[] {
   const apo = run.finalOrbit.apoapsis_m;
   const peri = run.finalOrbit.periapsis_m;
   if (!(peri >= 0 && apo >= peri)) return [];
@@ -37,16 +37,18 @@ function orbitalProjection(run: BenchmarkRun, last: AltitudePoint): AltitudePoin
       ? candidate
       : best;
   });
-  const count = 120;
+  const duration = endTime == null ? period : Math.max(0, endTime - last.t);
+  if (duration === 0) return [{ ...last }];
+  const count = Math.max(1, Math.ceil(120 * duration / period));
   return Array.from({ length: count + 1 }, (_, index) => {
-    const elapsed = period * index / count;
+    const elapsed = duration * index / count;
     // Radius is not exactly sinusoidal in time for an eccentric orbit, but this
     // starts at the observed altitude and reaches both apsides at the right period.
     return { t: last.t + elapsed, alt: midpoint + amplitude * Math.cos(startPhase + angularRate * elapsed) };
   });
 }
 
-function ballisticProjection(points: AltitudePoint[]): AltitudePoint[] {
+function ballisticProjection(points: AltitudePoint[], endTime?: number): AltitudePoint[] {
   const last = points.at(-1)!;
   let lookback = points.at(-2)!;
   for (let index = points.length - 2; index >= 0; index -= 1) {
@@ -60,13 +62,17 @@ function ballisticProjection(points: AltitudePoint[]): AltitudePoint[] {
   const impactTime = positiveImpactTime(last.alt, verticalSpeed);
   if (!Number.isFinite(impactTime) || impactTime <= 0) return [];
 
-  const duration = Math.min(impactTime, 20 * 60);
+  const horizon = endTime == null ? 20 * 60 : Math.max(0, endTime - last.t);
+  const duration = Math.min(impactTime, horizon);
+  if (duration === 0) return [{ ...last }];
   const count = Math.max(24, Math.ceil(duration / 5));
-  return Array.from({ length: count + 1 }, (_, index) => {
+  const projected = Array.from({ length: count + 1 }, (_, index) => {
     const elapsed = duration * index / count;
     const altitude = last.alt + verticalSpeed * elapsed - 0.5 * KERBIN_SURFACE_GRAVITY * elapsed ** 2;
-    return { t: last.t + elapsed, alt: Math.max(0, altitude) };
+    return { t: last.t + elapsed, alt: duration === impactTime && index === count ? 0 : Math.max(0, altitude) };
   });
+  if (endTime != null && endTime > last.t + duration) projected.push({ t: endTime, alt: 0 });
+  return projected;
 }
 
 function positiveImpactTime(altitude: number, verticalSpeed: number) {
