@@ -1,6 +1,6 @@
 {
   "benchmarkVersion": "0.1.0",
-  "generatedAt": "2026-07-13T15:42:07.831330+00:00",
+  "generatedAt": "2026-07-17T01:42:59.834255+00:00",
   "runs": [
     {
       "adapter": "opencode_cli_ksp_agent",
@@ -836,6 +836,82 @@
         "session_id": "ses_0aedca9baffeM0SEuVxaHugVzx",
         "source": "opencode_session",
         "total_tokens": 1043347
+      }
+    },
+    {
+      "adapter": "opencode_cli_ksp_agent",
+      "benchmarkVersion": "0.1.0",
+      "createdAt": "2026-07-17T01:38:34.073360+00:00",
+      "detailUrl": "/data/runs/20260717T013833Z_opencode_live_r1.json",
+      "diagnostics": {
+        "action_count": 32,
+        "ascent_points": 11.66,
+        "circularization_points": 0.0,
+        "cleared_tower": true,
+        "controllable": true,
+        "failure_category": null,
+        "flight_termination_errors": 0,
+        "intact": true,
+        "invalid_actions": 0,
+        "max_altitude_m": 40811.393,
+        "max_apoapsis_m": 58599.648,
+        "max_periapsis_m": -464930.85,
+        "outcome": "completed",
+        "policy_violations": 0,
+        "reached_10km": true,
+        "reached_space": false,
+        "recoverable_tool_errors": 0,
+        "stable_orbit": false,
+        "termination_reason": null,
+        "tool_errors": 0,
+        "valid_run": true
+      },
+      "finalOrbit": {
+        "apoapsis_m": 3181.351,
+        "body": "Kerbin",
+        "eccentricity": 0.956783,
+        "inclination_deg": 0.002,
+        "orbit_error_m": 371748.475,
+        "orbital_speed_m_s": 560.618,
+        "periapsis_m": -586678.301,
+        "situation": "flying",
+        "target_altitude_m": 80000.0,
+        "time_to_apoapsis_s": 546.228,
+        "time_to_periapsis_s": 260.125
+      },
+      "flightUrl": "/data/flights/20260717T013833Z_opencode_live_r1.json",
+      "fuelRemaining": {
+        "liquid_fuel": 74.33,
+        "oxidizer": 90.848,
+        "solid_fuel": 0.0
+      },
+      "harnessVersion": "0.0.1",
+      "instanceId": "kerbin_orbit_80km_fixed_rocket_v0",
+      "model": "openai/gpt-5.6-luna",
+      "remainingDeltaVMs": 948.427,
+      "runId": "20260717T013833Z_opencode_live_r1",
+      "score": 11.66,
+      "thinkingLevel": "low",
+      "time": {
+        "agent_timeout_s": null,
+        "mission_elapsed_s": 253.06,
+        "wall_clock_elapsed_s": 263.778
+      },
+      "usage": {
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 400896,
+        "cost_kind": "api_equivalent",
+        "cost_usd": 0.1025466,
+        "input_tokens": 45261,
+        "model": "gpt-5.6-luna",
+        "output_tokens": 2071,
+        "pricing_model": "gpt-5.6-luna",
+        "pricing_source": "OpenAI standard API",
+        "provider": "openai",
+        "reasoning_tokens": 795,
+        "session_id": "ses_092464be5ffeCGnRT2A2v5H2v5",
+        "source": "opencode_session",
+        "total_tokens": 449023
       }
     },
     {
