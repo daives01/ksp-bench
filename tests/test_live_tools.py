@@ -508,6 +508,19 @@ def test_multiple_background_tasks_run_and_stop_by_id(tmp_path) -> None:
     session.stop_task(task_id=second["task_id"])
 
 
+def test_background_task_timeout_is_not_capped_by_max_wait(tmp_path) -> None:
+    session = _session(tmp_path, max_wait_s=240.0, poll_interval_s=0.01)
+
+    started = session.start_task(
+        "while not should_stop():\n    sleep(0.02)",
+        timeout_s=900.0,
+    )
+
+    assert started["ok"] is True
+    assert session.actions[-1]["timeout_s"] == 900.0
+    assert session.stop_task(task_id=started["task_id"])["ok"] is True
+
+
 def test_foreground_tools_work_while_background_task_runs_on_separate_controller(
     tmp_path,
 ) -> None:

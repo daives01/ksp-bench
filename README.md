@@ -92,7 +92,9 @@ accelerated by time warp, so it is not used to rank run duration.
 
 Benchmark agents have no wall-clock deadline by default. Runs stop when the agent exits or the
 flight harness detects an unrecoverable vessel state. Use `--agent-timeout` only when an explicit
-process deadline is desired; per-call and background-task safety timeouts remain in place.
+process deadline is desired. Foreground calls and waits retain short safety caps. Background tasks
+default to `--task-timeout`, while an explicit `start_task` timeout is honored so a single task can
+cover a full ascent, coast, and circularization.
 
 Raw telemetry is recorded independently of agent tool calls every five wall-clock seconds by
 default (`--telemetry-interval`). The compact public flight trace keeps regular mission-time

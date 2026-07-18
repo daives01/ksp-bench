@@ -9,6 +9,7 @@ import time
 
 from bench.agent_adapters import (
     AGENT_NAME,
+    PROJECT_ROOT,
     REFERENCE_DIR,
     OpenCodeAgentAdapter,
     _build_krpc_api_index,
@@ -90,6 +91,12 @@ def test_opencode_agent_metadata_includes_thinking_level() -> None:
 
     assert adapter.agent_metadata["model"] == "openai/gpt-5.4"
     assert adapter.agent_metadata["thinking_level"] == "high"
+
+
+def test_ksp_agent_does_not_force_sampling_temperature() -> None:
+    agent_config = (PROJECT_ROOT / ".opencode/agents/ksp.md").read_text(encoding="utf-8")
+
+    assert "temperature:" not in agent_config
 
 
 def test_opencode_environment_disables_privileged_reset_tool(tmp_path, monkeypatch) -> None:

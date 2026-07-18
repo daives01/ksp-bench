@@ -5,6 +5,7 @@ import { loadFlightTrace } from "@/lib/data";
 import { projectedAltitude, type AltitudePoint } from "@/lib/trajectory";
 import { altitudeAnimationDelay } from "@/lib/altitudeAnimation";
 import { Button } from "@/components/ui/button";
+import { MagneticPointField, type MagneticPoint } from "@/components/MagneticPointField";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { BenchmarkRun, FlightTrace } from "@/types";
 
@@ -229,7 +230,15 @@ function TradeoffGrid({ runs, colors, xMetric, yMetric, activeId, pinnedId, setH
   const extent = (metric: Metric) => niceExtent(finite(metric), metric); const [xmin,xmax]=extent(xMetric), [ymin,ymax]=extent(yMetric);
   const scale=(v:number,min:number,max:number,start:number,end:number,invert=false) => start + ((invert ? max-v : v-min) / Math.max(max-min, 1)) * (end-start);
   const tickDisplay = (metric: Metric, v: number) => metric === "cost" ? formatCost(v) : metric === "time" ? formatSeconds(v) : metric === "tokens" ? Intl.NumberFormat("en", { notation: "compact" }).format(v) : v.toFixed(1);
-  return <div className="tradeoff-grid"><div className="axis-controls"><label><span>Y axis</span><MetricControl value={yMetric} onChange={setYMetric} /></label><span className="axis-controls__by">by</span><label><span>X axis</span><MetricControl value={xMetric} onChange={setXMetric} /></label></div><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${metricMeta[xMetric].label} by ${metricMeta[yMetric].label} grid`} onClick={()=>setPinnedId(null)}><rect x={pad.l} y={pad.t} width={width-pad.l-pad.r} height={height-pad.t-pad.b} className="grid-box" />{[0,.25,.5,.75,1].map((tick)=>{const gx=pad.l+(width-pad.l-pad.r)*tick, gy=height-pad.b-(height-pad.t-pad.b)*tick; const xv=metricMeta[xMetric].better==="low"?xmax-(xmax-xmin)*tick:xmin+(xmax-xmin)*tick; const yv=ymin+(ymax-ymin)*tick; return <g key={tick}><line className="chart-grid" x1={gx} x2={gx} y1={pad.t} y2={height-pad.b}/><line className="chart-grid" x1={pad.l} x2={width-pad.r} y1={gy} y2={gy}/><text className="chart-tick" x={gx} y={height-pad.b+22} textAnchor="middle">{tickDisplay(xMetric,xv)}</text><text className="chart-tick" x={pad.l-12} y={gy+4} textAnchor="end">{tickDisplay(yMetric,yv)}</text></g>})}<text className="axis-title" x={(pad.l+width-pad.r)/2} y={height-5} textAnchor="middle">{metricMeta[xMetric].label} ({metricMeta[xMetric].unit}) · best →</text><text className="axis-title" transform={`translate(17 ${(pad.t+height-pad.b)/2}) rotate(-90)`} textAnchor="middle">{metricMeta[yMetric].label} ({metricMeta[yMetric].unit}) · best ↑</text>{runs.filter((run)=>Number.isFinite(value(run,xMetric))&&Number.isFinite(value(run,yMetric))).map((run)=>{ const cx=scale(value(run,xMetric),xmin,xmax,pad.l,width-pad.r,metricMeta[xMetric].better==="low"), cy=scale(value(run,yMetric),ymin,ymax,height-pad.b,pad.t,false); const active=activeId===run.runId; return <g key={run.runId} data-model-selection className={`grid-point ${active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`${modelLabel(run.model)}, ${metricMeta[xMetric].label} ${display(run,xMetric)}, ${metricMeta[yMetric].label} ${display(run,yMetric)}`} onMouseEnter={()=>setHoveredId(run.runId)} onMouseLeave={()=>setHoveredId(null)} onFocus={()=>setHoveredId(run.runId)} onBlur={()=>setHoveredId(null)} onClick={(event)=>{event.stopPropagation();setPinnedId(pinnedId===run.runId?null:run.runId);}}>{compact ? <circle className="grid-point__hit" cx={cx} cy={cy} r={18}/> : null}<circle cx={cx} cy={cy} r={active?10:7} fill={colors[run.runId]}/>{active ? <GridPointTooltip run={run} xMetric={xMetric} yMetric={yMetric} cx={cx} cy={cy} width={width} /> : null}</g>;})}</svg></div>;
+  const visibleTicks=(min:number,max:number)=>[0,.25,.5,.75,1].map((tick)=>(min<0?0:min)+(max-(min<0?0:min))*tick);
+  const xTicks=visibleTicks(xmin,xmax), yTicks=visibleTicks(ymin,ymax);
+  const plotWidth=width-pad.l-pad.r, plotHeight=height-pad.t-pad.b;
+  const points: MagneticPoint[]=runs.filter((run)=>Number.isFinite(value(run,xMetric))&&Number.isFinite(value(run,yMetric))).map((run)=>{
+    const cx=scale(value(run,xMetric),xmin,xmax,pad.l,width-pad.r,metricMeta[xMetric].better==="low");
+    const cy=scale(value(run,yMetric),ymin,ymax,height-pad.b,pad.t,false);
+    return {id:run.runId,x:(cx-pad.l)/plotWidth*100,y:(cy-pad.t)/plotHeight*100,label:`${modelLabel(run.model)} · ${display(run,xMetric)} × ${display(run,yMetric)}`,ariaLabel:`${modelLabel(run.model)}, ${metricMeta[xMetric].label} ${display(run,xMetric)}, ${metricMeta[yMetric].label} ${display(run,yMetric)}`,size:activeId===run.runId?20:15,markerStyle:{backgroundColor:colors[run.runId]}};
+  });
+  return <div className="tradeoff-grid"><div className="axis-controls"><label><span>Y axis</span><MetricControl value={yMetric} onChange={setYMetric} /></label><span className="axis-controls__by">by</span><label><span>X axis</span><MetricControl value={xMetric} onChange={setXMetric} /></label></div><div className="tradeoff-grid__field"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${metricMeta[xMetric].label} by ${metricMeta[yMetric].label} grid`} onClick={()=>setPinnedId(null)}><rect x={pad.l} y={pad.t} width={plotWidth} height={plotHeight} className="grid-box" />{xTicks.map((tick)=>{const gx=scale(tick,xmin,xmax,pad.l,width-pad.r,metricMeta[xMetric].better==="low");return <g key={`x-${tick}`}><line className={`chart-grid ${tick===0?"is-zero":""}`} x1={gx} x2={gx} y1={pad.t} y2={height-pad.b}/><text className="chart-tick" x={gx} y={height-pad.b+22} textAnchor="middle">{tickDisplay(xMetric,tick)}</text></g>})}{yTicks.map((tick)=>{const gy=scale(tick,ymin,ymax,height-pad.b,pad.t,false);return <g key={`y-${tick}`}><line className={`chart-grid ${tick===0?"is-zero":""}`} x1={pad.l} x2={width-pad.r} y1={gy} y2={gy}/><text className="chart-tick" x={pad.l-12} y={gy+4} textAnchor="end">{tickDisplay(yMetric,tick)}</text></g>})}<text className="axis-title" x={(pad.l+width-pad.r)/2} y={height-5} textAnchor="middle">{metricMeta[xMetric].label} ({metricMeta[xMetric].unit}) · best →</text><text className="axis-title" transform={`translate(17 ${(pad.t+height-pad.b)/2}) rotate(-90)`} textAnchor="middle">{metricMeta[yMetric].label} ({metricMeta[yMetric].unit}) · best ↑</text></svg><div className="tradeoff-grid__points" style={{left:`${pad.l/width*100}%`,right:`${pad.r/width*100}%`,top:`${pad.t/height*100}%`,bottom:`${pad.b/height*100}%`}}><MagneticPointField points={points} selectedId={pinnedId} onActiveChange={setHoveredId} onSelect={(id)=>setPinnedId(pinnedId===id?null:id)}/></div></div></div>;
 }
 
 function niceExtent(values: number[], metric: Metric): readonly [number, number] {
@@ -237,24 +246,17 @@ function niceExtent(values: number[], metric: Metric): readonly [number, number]
   const rawMin=Math.min(...values), rawMax=Math.max(...values);
   const baselineSpan=metric==="score"?10:Math.max(Math.abs(rawMax)*.2,1);
   const span=Math.max(rawMax-rawMin,baselineSpan);
-  const paddedMin=rawMin-span*.12, paddedMax=rawMax+span*.12;
+  // Generous visual bounds keep dense low-value clusters away from the axes.
+  // Bounds may extend below zero to create an unlabeled origin gutter.
+  const paddedMin=rawMin-span*.32, paddedMax=rawMax+span*.32;
   const roughStep=(paddedMax-paddedMin)/4;
   const power=10**Math.floor(Math.log10(Math.max(roughStep,Number.EPSILON)));
   const fraction=roughStep/power;
   const step=(fraction<=1?1:fraction<=2?2:fraction<=5?5:10)*power;
   let min=Math.floor(paddedMin/step)*step, max=Math.ceil(paddedMax/step)*step;
-  if (metric==="score") { min=Math.max(0,min); max=Math.min(120,max); }
-  else if (rawMin>=0 && min<0) min=0;
+  if (metric==="score") max=Math.min(120,max);
   if (max<=min) max=min+step;
   return [min,max];
-}
-
-function GridPointTooltip({ run, xMetric, yMetric, cx, cy, width }: { run: BenchmarkRun; xMetric: Metric; yMetric: Metric; cx: number; cy: number; width: number }) {
-  const label=modelLabel(run.model), boxWidth=Math.min(270,Math.max(170,label.length*8+24)), boxHeight=52;
-  const preferredLeft=cx+boxWidth+16>width?cx-boxWidth-14:cx+14;
-  const left=Math.min(width-boxWidth-8,Math.max(8,preferredLeft));
-  const top=Math.max(8,cy-boxHeight/2);
-  return <g className="grid-tooltip" pointerEvents="none"><rect x={left} y={top} width={boxWidth} height={boxHeight} rx={6}/><text x={left+11} y={top+19}><tspan className="grid-tooltip__title">{label}</tspan><tspan x={left+11} dy={18}>{metricMeta[xMetric].label} {display(run,xMetric)} · {metricMeta[yMetric].label} {display(run,yMetric)}</tspan></text></g>;
 }
 
 function useMediaQuery(query: string) {

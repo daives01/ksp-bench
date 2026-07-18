@@ -271,7 +271,7 @@ class FlightSession:
         timeout_s: float | None = None,
         event_task_id: str | None = None,
     ) -> dict[str, Any]:
-        budget_s = self._timeout(timeout_s, default=self.task_timeout_s)
+        budget_s = self._task_timeout(timeout_s)
         started = time.monotonic()
         action: dict[str, Any] = {
             "type": "start_task",
@@ -992,6 +992,12 @@ class FlightSession:
         if value <= 0:
             raise ValueError("timeout_s must be positive")
         return min(value, self.max_wait_s)
+
+    def _task_timeout(self, requested: float | None) -> float:
+        value = self.task_timeout_s if requested is None else float(requested)
+        if value <= 0:
+            raise ValueError("timeout_s must be positive")
+        return value
 
     def _sync_python_timeout(self, timeout_s: float) -> PythonExecutionTimeout:
         return PythonExecutionTimeout(

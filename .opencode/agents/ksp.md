@@ -1,7 +1,6 @@
 ---
 description: Fly a Kerbal Space Program vessel.
 mode: primary
-temperature: 0.1
 permission:
   '*': deny
   read: allow
